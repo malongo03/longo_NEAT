@@ -1,12 +1,8 @@
-use std::cmp::max;
 use std::collections::HashMap;
 use crate::genome::{genome_distance, Genome, NeuronGene, NeuronType, SynapseGene};
 use std::ops::{Deref, DerefMut};
-use std::ptr::addr_eq;
 use rand::distr::Uniform;
 use rand::prelude::*;
-use rand::random_range;
-use rand::seq::SliceRandom;
 
 struct SpeciesHistory {
     id: usize,
@@ -62,17 +58,17 @@ const DISTANCE_EXCESS_WEIGHT: f64 = 1.0;
 const DISTANCE_WEIGHT_DIFF_WEIGHT: f64 = 3.0;
 
 struct ActiveSpecies {
-    historical_index: usize,
-    pop_indices: Vec<usize>,
+    species_history_id: usize,
+    member_indices: Vec<usize>,
 
     last_improvement_counter: usize,
     last_improvement_fitness: f64,
 }
 impl ActiveSpecies {
-    fn new(historical_index: usize) -> Self {
+    fn new(species_history_id: usize) -> Self {
         Self {
-            historical_index,
-            pop_indices: Vec::new(),
+            species_history_id,
+            member_indices: Vec::new(),
 
             last_improvement_counter: 0,
             last_improvement_fitness: f64::NEG_INFINITY,
@@ -92,9 +88,9 @@ struct Population {
     population: Generation,
     fitness: Vec<Option<f64>>,
 
-    new_inno_index: usize,
-    new_node_index: usize,
-    new_species_index: usize,
+    next_inno_index: usize,
+    next_node_index: usize,
+    next_species_id: usize,
     generation_index: usize,
 
     last_improvement_counter: usize,
@@ -121,31 +117,28 @@ impl Population {
         let stagnating_species: Vec<bool> = self.check_for_stagnation(best_fitness_per_species);
 
         // 3. Calculate total valid fitness
-        let mut total_fitness = 0.0;
-        for (active_index, species_fitness) in average_fitness_per_species.iter().enumerate() {
-            if stagnating_species[active_index] {
-                continue;
-            }
-            total_fitness += species_fitness;
-        }
-        let total_fitness = total_fitness;
+        let total_fitness: f64 = average_fitness_per_species.iter()
+            .enumerate()
+            .filter(|(idx, _)| !stagnating_species[*idx])
+            .map(|(_, &fitness)| fitness)
+            .sum();
 
         // 4. Determine allotments for each active species
         let mut remainder: usize = self.population_size;
-        let mut alloted_children: Vec<usize> = vec![0; num_active_species];
+        let mut allotted_children: Vec<usize> = vec![0; num_active_species];
         for (active_index, avg_fitness) in average_fitness_per_species.into_iter().enumerate() {
             if stagnating_species[active_index] {
                 continue;
             }
             let allotment: usize = (avg_fitness / total_fitness).floor() as usize;
-            alloted_children[active_index] = allotment;
+            allotted_children[active_index] = allotment;
             remainder -= allotment;
         }
         // 4.5. Make sure that the full population size was
         while remainder > 0 {
-            for index in 0..num_active_species {
+            for index in (0..num_active_species).rev() {
                 if !stagnating_species[index] {
-                    alloted_children[index] += 1;
+                    allotted_children[index] += 1;
                     remainder -= 1;
                 }
                 if remainder == 0 {
@@ -156,15 +149,14 @@ impl Population {
 
         // 5. Produce new generation, sorted into proper species
         let mut new_indices: Vec<Vec<usize>> = Vec::with_capacity(num_active_species);
-        for &num_children in alloted_children.iter() {
+        for &num_children in allotted_children.iter() {
             new_indices.push(Vec::with_capacity(num_children));
         }
         let mut new_innos: HashMap<(usize, usize), usize> = HashMap::new();
         let mut new_nodes: HashMap<usize, usize> = HashMap::new();
         let mut new_generation = Generation(Vec::with_capacity(num_active_species));
-        for (active_index, mut num_children) in alloted_children.into_iter().enumerate() {
-            let hist_index: usize = self.active_species[active_index].historical_index;
-            let pot_parents: usize = self.active_species[active_index].pop_indices.len();
+        for (active_index, mut num_children) in allotted_children.into_iter().enumerate() {
+            let num_potential_parents: usize = self.active_species[active_index].member_indices.len();
 
             // Clone best performing genome of the species from last generation if there is room.
             if num_children >= 5 {
@@ -175,38 +167,22 @@ impl Population {
                                                &mut anchors,
                                                champion.neuron_genes().clone(),
                                                champion.synapse_genes().clone(),
-                                               champion.species_hist_index());
+                                               champion.species_history_id());
 
                 num_children -= 1;
             }
 
             for _ in 0..num_children {
-                let parent1_index = *self.active_species[active_index].pop_indices
+                let parent1_index = *self.active_species[active_index].member_indices
                     .choose(&mut rng).expect("Pop indices will always be non-empty");
                 let parent1: &Genome = &self.population[parent1_index];
 
-                let (neuron_genes, synapse_genes, origin_index) =
+                let (neuron_genes, synapse_genes, origin_species) =
                     if rng.random_bool(EVOLUTION_NO_CROSSOVER) {
                         let genome = &self.population[parent1_index];
-                        (genome.neuron_genes().clone(), genome.synapse_genes().clone(), genome.species_hist_index())
+                        (genome.neuron_genes().clone(), genome.synapse_genes().clone(), genome.species_history_id())
                     }
-                    else if !rng.random_bool(EVOLUTION_INTERSPECIES) {
-                        'found_index: {
-                            if pot_parents > 1 {
-                                for _ in 0..20 {
-                                    let parent2_index = *self.active_species[active_index].pop_indices
-                                        .choose(&mut rng).expect("Pop indices will always be non-empty");
-                                    if parent1_index == parent2_index {
-                                        continue;
-                                    }
-                                    let parent2: &Genome = &self.population[parent2_index];
-                                    break 'found_index self.cross_over(parent1, parent2);
-                                }
-                            }
-                            (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_hist_index())
-                        }
-                    }
-                    else {
+                    else if rng.random_bool(EVOLUTION_INTERSPECIES) {
                         'found_index: {
                             if num_active_species > 1 {
                                 let species_index = rng.random_range(0..num_active_species - 1);
@@ -216,12 +192,28 @@ impl Population {
                                     } else {
                                         species_index
                                     };
-                                let parent2_index = *self.active_species[species_index].pop_indices
+                                let parent2_index = *self.active_species[species_index].member_indices
                                     .choose(&mut rng).expect("Pop indices will always be non-empty");
                                 let parent2: &Genome = &self.population[parent2_index];
                                 break 'found_index self.cross_over(parent1, parent2);
                             }
-                            (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_hist_index())
+                            (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_history_id())
+                        }
+                    }
+                    else {
+                        'found_index: {
+                            if num_potential_parents > 1 {
+                                for _ in 0..20 {
+                                    let parent2_index = *self.active_species[active_index].member_indices
+                                        .choose(&mut rng).expect("Pop indices will always be non-empty");
+                                    if parent1_index == parent2_index {
+                                        continue;
+                                    }
+                                    let parent2: &Genome = &self.population[parent2_index];
+                                    break 'found_index self.cross_over(parent1, parent2);
+                                }
+                            }
+                            (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_history_id())
                         }
                     };
                 let (neuron_genes, synapse_genes) = self.mutate(neuron_genes, synapse_genes, &mut new_innos, &mut new_nodes);
@@ -231,21 +223,21 @@ impl Population {
                                                &mut anchors,
                                                neuron_genes,
                                                synapse_genes,
-                                               origin_index);
+                                               origin_species);
             }
         }
 
         // 6. Perform extinctions
         let mut new_active_species: Vec<ActiveSpecies> = Vec::with_capacity(num_active_species);
-        for (active_index, pop_indices) in new_indices.into_iter().enumerate() {
+        for (active_index, member_indices) in new_indices.into_iter().enumerate() {
             let old_species = &self.active_species[active_index];
-            if pop_indices.len() == 0 {
-                self.history.species[old_species.historical_index].extinct_gen = Some(self.generation_index);
+            if member_indices.len() == 0 {
+                self.history.species[old_species.species_history_id].extinct_gen = Some(self.generation_index);
                 continue;
             }
             new_active_species.push(ActiveSpecies{
-                historical_index: old_species.historical_index,
-                pop_indices,
+                species_history_id: old_species.species_history_id,
+                member_indices,
                 last_improvement_counter: old_species.last_improvement_counter,
                 last_improvement_fitness: old_species.last_improvement_fitness,
             });
@@ -279,28 +271,28 @@ impl Population {
         // 3.) Find the average fitness for each active species
         // 4.) Truncate each species by killing a fraction of worst scorers
         // 5.) Save the best fitness to history
-        for active_species in self.active_species.iter_mut() {
+        for (active_index, active_species) in self.active_species.iter_mut().enumerate() {
             // 1
-            active_species.pop_indices.sort_unstable_by(|a, b| {
+            active_species.member_indices.sort_unstable_by(|a, b| {
                 let fit_a = self.fitness[*a].expect("Already sanitized");
                 let fit_b = self.fitness[*b].expect("Already sanitized");
                 fit_b.partial_cmp(&fit_a).expect("Fitness cannot be NaN")
             });
-            let champion_index: usize = active_species.pop_indices[0];
+            let champion_index: usize = active_species.member_indices[0];
             let champion_fitness: f64 = self.fitness[champion_index].expect("Already sanitized");
             champions.push(self.population[champion_index].clone());
             best_fitness_per_species.push(champion_fitness);
 
             // 2
-            let repr_index: usize = *active_species.pop_indices.choose(&mut rng).expect(
+            let repr_index: usize = *active_species.member_indices.choose(&mut rng).expect(
                 "An empty active species should have been made extinct and filtered out."
             );
             anchors.push(self.population[repr_index].clone());
 
             // 3
             let mut species_fitness = 0.0;
-            let species_pop: f64 = active_species.pop_indices.len() as f64;
-            for &genome_index in active_species.pop_indices.iter() {
+            let species_pop: f64 = active_species.member_indices.len() as f64;
+            for &genome_index in active_species.member_indices.iter() {
                 let fitness = self.fitness[genome_index].expect("Already sanitized");
                 let adj_fitness = fitness / species_pop;
                 species_fitness += adj_fitness;
@@ -308,11 +300,12 @@ impl Population {
             average_fitness_per_species.push(species_fitness);
 
             // 4
-            let truncate_number = active_species.pop_indices.len() - (EVOLUTION_TRUNCATION * species_pop).floor() as usize;
-            active_species.pop_indices.truncate(truncate_number);
+            let survival_count = active_species.member_indices.len() - (EVOLUTION_TRUNCATION * species_pop).floor() as usize;
+            active_species.member_indices.truncate(survival_count);
 
             // 5
-            self.history.species[active_species.historical_index].max_fitness.push(champion_fitness);
+            self.history.species[active_species.species_history_id].max_fitness.push(champion_fitness);
+            self.history.species[active_species.species_history_id].generation_indices.push(active_index);
         }
 
         // 6. Save current generation's genomes for historical analysis
@@ -339,7 +332,7 @@ impl Population {
 
             let fitness = best_fitness_per_species[0];
             active_species.last_improvement_counter += 1;
-            if fitness - active_species.last_improvement_fitness > EVOLUTION_TRUNCATION {
+            if fitness - active_species.last_improvement_fitness > EVOLUTION_STAGNATION_EPSILON {
                 active_species.last_improvement_counter = 0;
                 active_species.last_improvement_fitness = fitness;
             }
@@ -373,7 +366,7 @@ impl Population {
         // will be alloted zero children.
         let population_stagnation: bool = {
             self.last_improvement_counter += 1;
-            if top1_score - self.last_improvement_fitness > EVOLUTION_TRUNCATION {
+            if top1_score - self.last_improvement_fitness > EVOLUTION_STAGNATION_EPSILON {
                 self.last_improvement_counter = 0;
                 self.last_improvement_fitness = top1_score;
                 false
@@ -402,7 +395,7 @@ impl Population {
         for (active_index, active_species) in self.active_species.iter_mut().enumerate() {
             let fitness = best_fitness_per_species[active_index];
             active_species.last_improvement_counter += 1;
-            if fitness - active_species.last_improvement_fitness > EVOLUTION_TRUNCATION {
+            if fitness - active_species.last_improvement_fitness > EVOLUTION_STAGNATION_EPSILON {
                 active_species.last_improvement_counter = 0;
                 active_species.last_improvement_fitness = fitness;
                 continue;
@@ -432,7 +425,7 @@ impl Population {
                 if f1 > f2 {
                     (genome1.neuron_genes(),
                      genome1.synapse_genes(),
-                     genome1.species_hist_index(),
+                     genome1.species_history_id(),
                      genome2.neuron_genes(),
                      genome2.synapse_genes(),
                      false)
@@ -440,7 +433,7 @@ impl Population {
                 else if f2 > f1 {
                     (genome2.neuron_genes(),
                      genome2.synapse_genes(),
-                     genome2.species_hist_index(),
+                     genome2.species_history_id(),
                      genome1.neuron_genes(),
                      genome1.synapse_genes(),
                      false)
@@ -448,7 +441,7 @@ impl Population {
                 else {
                     (genome1.neuron_genes(),
                      genome1.synapse_genes(),
-                     genome1.species_hist_index(),
+                     genome1.species_history_id(),
                      genome2.neuron_genes(),
                      genome2.synapse_genes(),
                      true)
@@ -457,7 +450,7 @@ impl Population {
             (None, None) => {
                 (genome1.neuron_genes(),
                  genome1.synapse_genes(),
-                 genome1.species_hist_index(),
+                 genome1.species_history_id(),
                  genome2.neuron_genes(),
                  genome2.synapse_genes(),
                  true)
@@ -465,7 +458,7 @@ impl Population {
             (Some(_), None) => {
                 (genome1.neuron_genes(),
                  genome1.synapse_genes(),
-                 genome1.species_hist_index(),
+                 genome1.species_history_id(),
                  genome2.neuron_genes(),
                  genome2.synapse_genes(),
                  false)
@@ -473,7 +466,7 @@ impl Population {
             (None, Some(_)) => {
                 (genome2.neuron_genes(),
                  genome2.synapse_genes(),
-                 genome2.species_hist_index(),
+                 genome2.species_history_id(),
                  genome1.neuron_genes(),
                  genome1.synapse_genes(),
                  false)
@@ -513,11 +506,11 @@ impl Population {
             while let (Some(&gene1), Some(&gene2)) = (syna_iter1.peek(), syna_iter2.peek()) {
                 if gene1.inno_num < gene2.inno_num {
                     new_synapses.push(gene1.clone());
-                    neur_iter1.next();
+                    syna_iter1.next();
                 }
                 else if gene2.inno_num < gene1.inno_num {
                     new_synapses.push(gene2.clone());
-                    neur_iter2.next();
+                    syna_iter2.next();
                 }
                 else {
                     let mut syna_gene = if rng.random_bool(0.5) {
@@ -532,8 +525,8 @@ impl Population {
                     }
 
                     new_synapses.push(syna_gene);
-                    neur_iter1.next();
-                    neur_iter2.next();
+                    syna_iter1.next();
+                    syna_iter2.next();
                 }
             }
             while let Some(&gene) = syna_iter1.peek() {
@@ -644,8 +637,8 @@ impl Population {
 
                 let inno_num = *new_innos.entry((src_id, tgt_id))
                     .or_insert_with(|| {
-                        let new_num = self.new_inno_index;
-                        self.new_inno_index += 1;
+                        let new_num = self.next_inno_index;
+                        self.next_inno_index += 1;
                         new_num
                     });
 
@@ -664,55 +657,62 @@ impl Population {
 
         // Mutate a new node. This one is guaranteed to succeed.
         if rng.random_bool(MUTATE_NEW_NODE) {
-            let target_idx = rng.random_range(0..synapse_genes.len());
-            let old_synapse = synapse_genes[target_idx].clone();
-            synapse_genes[target_idx].enabled = false;
+            let target_idx = synapse_genes.iter()
+                .enumerate()
+                .filter(|(_, gene)| gene.enabled)
+                .map(|(idx, _)| idx)
+                .choose(&mut rng);
 
-            let new_node_id = *new_nodes.entry(old_synapse.inno_num).or_insert_with(|| {
-                let id = self.new_node_index;
-                self.new_node_index += 1;
-                id
-            });
+            if let Some(target_idx) = target_idx {
+                let old_synapse = synapse_genes[target_idx].clone();
+                synapse_genes[target_idx].enabled = false;
 
-            let is_new_split = new_node_id == self.new_node_index - 1;
+                let new_node_id = *new_nodes.entry(old_synapse.inno_num).or_insert_with(|| {
+                    let id = self.next_node_index;
+                    self.next_node_index += 1;
+                    id
+                });
 
-            let (inno1, inno2) = if is_new_split {
-                let i1 = self.new_inno_index;
-                let i2 = self.new_inno_index + 1;
-                self.new_inno_index += 2;
+                let is_new_split = new_node_id == self.next_node_index - 1;
 
-                new_innos.insert((old_synapse.src_id, new_node_id), i1);
-                new_innos.insert((new_node_id, old_synapse.tgt_id), i2);
+                let (inno1, inno2) = if is_new_split {
+                    let i1 = self.next_inno_index;
+                    let i2 = self.next_inno_index + 1;
+                    self.next_inno_index += 2;
 
-                (i1, i2)
+                    new_innos.insert((old_synapse.src_id, new_node_id), i1);
+                    new_innos.insert((new_node_id, old_synapse.tgt_id), i2);
+
+                    (i1, i2)
+                }
+                else {
+                    let i1 = *new_innos.get(&(old_synapse.src_id, new_node_id))
+                        .expect("New node innovation already evolved.");
+                    let i2 = i1 + 1;
+                    (i1, i2)
+                };
+
+                synapse_genes.push(SynapseGene {
+                    src_id: old_synapse.src_id,
+                    tgt_id: new_node_id,
+                    weight: 1.0,
+                    inno_num: inno1,
+                    enabled: old_synapse.enabled,
+                });
+
+                synapse_genes.push(SynapseGene {
+                    src_id: new_node_id,
+                    tgt_id: old_synapse.tgt_id,
+                    weight: old_synapse.weight,
+                    inno_num: inno2,
+                    enabled: true,
+                });
+
+                neuron_genes.push(NeuronGene{
+                    node_name: new_node_id,
+                    neuron_type: NeuronType::Inter()
+                })
             }
-            else {
-                let i1 = *new_innos.get(&(old_synapse.src_id, new_node_id))
-                    .expect("New node innovation already evolved.");
-                let i2 = i1 + 1;
-                (i1, i2)
-            };
-
-            synapse_genes.push(SynapseGene {
-                src_id: old_synapse.src_id,
-                tgt_id: new_node_id,
-                weight: 1.0,
-                inno_num: inno1,
-                enabled: old_synapse.enabled,
-            });
-
-            synapse_genes.push(SynapseGene {
-                src_id: new_node_id,
-                tgt_id: old_synapse.tgt_id,
-                weight: old_synapse.weight,
-                inno_num: inno2,
-                enabled: true,
-            });
-
-            neuron_genes.push(NeuronGene{
-                node_name: new_node_id,
-                neuron_type: NeuronType::Inter()
-            })
         }
 
         (neuron_genes, synapse_genes)
@@ -736,7 +736,7 @@ impl Population {
                                                     DISTANCE_WEIGHT_DIFF_WEIGHT);
 
                 if distance <= self.species_threshold {
-                    break 'found_index Some((active_index, anchor.species_hist_index()))
+                    break 'found_index Some((active_index, anchor.species_history_id()))
                 }
             }
             None
@@ -747,12 +747,14 @@ impl Population {
             }
             else {
                 let active_index = self.active_species.len();
-                let species_hist_index = self.new_species_index;
+                let species_history_id = self.next_species_id;
+
+                self.next_species_id += 1;
 
                 new_indices.push(Vec::with_capacity(1));
-                self.active_species.push(ActiveSpecies::new(species_hist_index));
+                self.active_species.push(ActiveSpecies::new(species_history_id));
                 self.history.species.push(SpeciesHistory{
-                    id: species_hist_index,
+                    id: species_history_id,
                     birth_gen: self.generation_index,
                     origin_species,
                     extinct_gen: None,
@@ -760,7 +762,7 @@ impl Population {
                     generation_indices: Vec::new(),
                 });
 
-                (active_index, species_hist_index, true)
+                (active_index, species_history_id, true)
             };
 
         new_indices[active_index].push(id);

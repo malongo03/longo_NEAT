@@ -51,7 +51,7 @@ pub struct SynapseGene {
 ///
 /// ***id: usize*** - Index of a genome within a Population.
 ///
-/// ***species_hist_index: usize*** - Index of the species within the History of a Population.
+/// ***species_history_id: usize*** - Index of the species within the History of a Population.
 ///
 /// ***neuron_genes: Vec<NeuronGene>*** - List of genes for nodes in the neural network.
 ///
@@ -79,19 +79,19 @@ pub struct Genome {
     /// Index of a genome within a Population.
     id: usize,
     /// Index of the species as it arose in evolution.
-    species_hist_index: usize,
+    species_history_id: usize,
     neuron_genes: Vec<NeuronGene>,
     synapse_genes: Vec<SynapseGene>,
 }
 impl Genome {
     /// Create a Genome object. This function guarantees the Genome is compatible with Population's
     /// and Neural_Network's assumptions.
-    pub fn new(id: usize, species_hist_index: usize, neuron_genes: Vec<NeuronGene>,
+    pub fn new(id: usize, species_history_id: usize, neuron_genes: Vec<NeuronGene>,
                synapse_genes: Vec<SynapseGene>) -> Result<Genome, Box<dyn Error>> {
 
         let new_genome = Self {
             id,
-            species_hist_index,
+            species_history_id,
             neuron_genes,
             synapse_genes
         };
@@ -107,7 +107,7 @@ impl Genome {
     /// validated to never trigger a check_assumptions error.
     pub fn new_no_check(id: usize, species_hist: usize, neuron_genes: Vec<NeuronGene>,
                         synapse_genes: Vec<SynapseGene>) -> Genome {
-        Self{id, species_hist_index: species_hist, neuron_genes, synapse_genes}
+        Self{id, species_history_id: species_hist, neuron_genes, synapse_genes}
     }
 
     /// Checks for the following possible violations of Genome's parameters:
@@ -212,7 +212,7 @@ impl Genome {
     pub fn id(&self) -> usize {self.id}
 
     /// Index of the species within the History of a Population.
-    pub fn species_hist_index(&self) -> usize {self.species_hist_index }
+    pub fn species_history_id(&self) -> usize {self.species_history_id }
 
     /// List of genes for nodes in the neural network.
     pub fn neuron_genes(&self) -> &Vec<NeuronGene> {&self.neuron_genes}
