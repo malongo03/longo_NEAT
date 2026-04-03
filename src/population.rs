@@ -10,7 +10,7 @@ struct SpeciesHistory {
     origin_species: usize,
     extinct_gen: Option<usize>,
     max_fitness: Vec<f64>,
-    generation_indices: Vec<usize>, // TODO
+    generation_indices: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
