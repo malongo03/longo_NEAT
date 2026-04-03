@@ -2,6 +2,7 @@ use std::cmp::max;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Debug;
+use rand::RngExt;
 
 /// The type of a neuron described by a NetworkNode or a NeuronGene.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +288,153 @@ pub fn genome_distance(first: &Vec<SynapseGene>, second: &Vec<SynapseGene>,
     mismatch_penalty + weight_penalty
 }
 
+pub fn genome_crossover(genome1: &Genome,
+                        genome2: &Genome,
+                        fitness1: f64,
+                        fitness2: f64,
+                        inherit_disable_prob: f64) -> (Vec<NeuronGene>, Vec<SynapseGene>, usize) {
+
+    // Genome with the highest fitness is considered dominant. If neither has a higher fitness,
+    // we consider both Genomes dominant.
+    let (dom_neur, dom_syna, dom_species, rec_neur, rec_syna, both_dom) =
+        if fitness1 > fitness2 {
+            (genome1.neuron_genes(),
+             genome1.synapse_genes(),
+             genome1.species_history_id(),
+             genome2.neuron_genes(),
+             genome2.synapse_genes(),
+             false)
+        }
+        else if fitness2 > fitness1 {
+            (genome2.neuron_genes(),
+             genome2.synapse_genes(),
+             genome2.species_history_id(),
+             genome1.neuron_genes(),
+             genome1.synapse_genes(),
+             false)
+        }
+        else {
+            (genome1.neuron_genes(),
+             genome1.synapse_genes(),
+             genome1.species_history_id(),
+             genome2.neuron_genes(),
+             genome2.synapse_genes(),
+             true)
+        };
+
+    let mut rng = rand::rng();
+
+    if both_dom {
+        // If both genomes are dominant, we have to inherit everything from both. (Note, this
+        // should almost never happen without some kind of manual intervention.)
+        let mut new_neurons: Vec<NeuronGene> = Vec::new();
+        let mut new_synapses: Vec<SynapseGene> = Vec::new();
+
+        let mut neur_iter1 = genome1.neuron_genes().iter().peekable();
+        let mut neur_iter2 = genome2.neuron_genes().iter().peekable();
+
+        while let (Some(&gene1), Some(&gene2)) = (neur_iter1.peek(), neur_iter2.peek()) {
+            if gene1.node_name < gene2.node_name {
+                new_neurons.push(gene1.clone());
+                neur_iter1.next();
+            }
+            else if gene2.node_name < gene1.node_name {
+                new_neurons.push(gene2.clone());
+                neur_iter2.next();
+            }
+            else {
+                new_neurons.push(gene1.clone());
+                neur_iter1.next();
+                neur_iter2.next();
+            }
+        }
+        while let Some(&node) = neur_iter1.peek() {
+            new_neurons.push(node.clone());
+            neur_iter1.next();
+        }
+        while let Some(&node) = neur_iter2.peek() {
+            new_neurons.push(node.clone());
+            neur_iter2.next();
+        }
+
+        let mut syna_iter1 = genome1.synapse_genes().iter().peekable();
+        let mut syna_iter2 = genome2.synapse_genes().iter().peekable();
+
+        while let (Some(&gene1), Some(&gene2)) = (syna_iter1.peek(), syna_iter2.peek()) {
+            if gene1.inno_num < gene2.inno_num {
+                new_synapses.push(gene1.clone());
+                syna_iter1.next();
+            }
+            else if gene2.inno_num < gene1.inno_num {
+                new_synapses.push(gene2.clone());
+                syna_iter2.next();
+            }
+            else {
+                let mut syna_gene = if rng.random_bool(0.5) {
+                    gene1.clone()
+                }
+                else {
+                    gene2.clone()
+                };
+
+                if !gene1.enabled || !gene2.enabled {
+                    syna_gene.enabled = !rng.random_bool(inherit_disable_prob);
+                }
+
+                new_synapses.push(syna_gene);
+                syna_iter1.next();
+                syna_iter2.next();
+            }
+        }
+        while let Some(&gene) = syna_iter1.peek() {
+            new_synapses.push(gene.clone());
+            syna_iter1.next();
+        }
+        while let Some(&gene) = syna_iter2.peek() {
+            new_synapses.push(gene.clone());
+            syna_iter2.next();
+        }
+
+        return (new_neurons, new_synapses, dom_species);
+    }
+
+    // If one of the Genomes is dominant, then we inherit everything disjoint or excess from
+    // the dominant Genome and none of these from the recessive Genome.
+    let child_neurons = dom_neur.clone();
+    let mut child_synapses = dom_syna.clone();
+
+    let mut rec_iter = rec_syna.iter().peekable();
+
+    // For any shared gene between the two Genomes, the weights are inherited from one Genome or
+    // the other at a 50/50 probability. If one of the shared genes is disabled, then there is
+    // a DISABLE_PROB (75%) chance of the inherited gene being disabled.
+    for child_genes in child_synapses.iter_mut() {
+        while let Some(&rec_gene) = rec_iter.peek() {
+            if rec_gene.inno_num < child_genes.inno_num {
+                rec_iter.next();
+            }
+            else {
+                break;
+            }
+        }
+
+        if let Some(&rec_gene) = rec_iter.peek(){
+            if rec_gene.inno_num == child_genes.inno_num {
+                if rng.random_bool(0.5) {
+                    child_genes.weight = rec_gene.weight;
+                }
+                if !child_genes.enabled || !rec_gene.enabled {
+                    child_genes.enabled = !rng.random_bool(inherit_disable_prob);
+                }
+
+                rec_iter.next();
+            }
+        }
+    }
+
+    (child_neurons, child_synapses, dom_species)
+}
+
 
 #[cfg(test)]
 mod genome_tests {
@@ -490,5 +638,281 @@ mod genome_tests {
             (actual_distance - expected_distance).abs() < f64::EPSILON,
             "Expected {}, got {}", expected_distance, actual_distance
         )
+    }
+
+    /// # GENOME CROSSOVER TESTS
+
+    /// node_nums = [0, 1, 3]
+    /// inno_nums = [0, 6, 7, 10]
+    fn helper_base_genome(id: usize) -> Genome {
+        let neuron_genes: Vec<NeuronGene> = vec![
+            NeuronGene { node_name: 0, neuron_type: NeuronType::Sensory(0) },
+            NeuronGene { node_name: 1, neuron_type: NeuronType::Muscular(0) },
+            NeuronGene { node_name: 3, neuron_type: NeuronType::Inter() },
+        ];
+
+        let synapse_genes: Vec<SynapseGene> = vec![
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 1,
+                weight: 10.0,
+                inno_num: 0,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 6,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 3,
+                tgt_id: 1,
+                weight: 5.0,
+                inno_num: 7,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 1,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 10,
+                enabled: true,
+            },
+        ];
+
+        Genome::new(id, 0, neuron_genes, synapse_genes).expect(
+            "This test genome should be valid."
+        )
+    }
+
+    /// node_nums = [0, 1, 3, 4]
+    /// inno_nums = [0, 6, 7, 10, 11, 12]
+    fn helper_excess_genome(id: usize) -> Genome {
+        let neuron_genes: Vec<NeuronGene> = vec![
+            NeuronGene { node_name: 0, neuron_type: NeuronType::Sensory(0) },
+            NeuronGene { node_name: 1, neuron_type: NeuronType::Muscular(0) },
+            NeuronGene { node_name: 3, neuron_type: NeuronType::Inter() },
+            NeuronGene { node_name: 4, neuron_type: NeuronType::Inter() }
+        ];
+
+        let synapse_genes: Vec<SynapseGene> = vec![
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 1,
+                weight: 20.0,
+                inno_num: 0,
+                enabled: false,
+            },
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 6,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 3,
+                tgt_id: 1,
+                weight: 5.0,
+                inno_num: 7,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 1,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 10,
+                enabled: false,
+            },
+            SynapseGene{
+                src_id: 1,
+                tgt_id: 4,
+                weight: 5.0,
+                inno_num: 11,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 4,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 12,
+                enabled: true,
+            },
+        ];
+
+        Genome::new(id, 0, neuron_genes, synapse_genes).expect(
+            "This test genome should be valid."
+        )
+    }
+
+    /// node_nums = [0, 1, 2, 3]
+    /// inno_nums = [0, 2, 3, 6, 7, 10]
+    fn helper_disjoint_genome(id: usize) -> Genome {
+        let neuron_genes: Vec<NeuronGene> = vec![
+            NeuronGene { node_name: 0, neuron_type: NeuronType::Sensory(0) },
+            NeuronGene { node_name: 1, neuron_type: NeuronType::Muscular(0) },
+            NeuronGene { node_name: 2, neuron_type: NeuronType::Muscular(0) },
+            NeuronGene { node_name: 3, neuron_type: NeuronType::Inter() },
+        ];
+
+        let synapse_genes: Vec<SynapseGene> = vec![
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 1,
+                weight: 5.0,
+                inno_num: 0,
+                enabled: false,
+            },
+            SynapseGene {
+                src_id: 0,
+                tgt_id: 2,
+                weight: 5.0,
+                inno_num: 2,
+                enabled: true,
+            },
+            SynapseGene {
+                src_id: 2,
+                tgt_id: 1,
+                weight: 5.0,
+                inno_num: 3,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 0,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 6,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 3,
+                tgt_id: 1,
+                weight: 5.0,
+                inno_num: 7,
+                enabled: true,
+            },
+            SynapseGene{
+                src_id: 1,
+                tgt_id: 3,
+                weight: 5.0,
+                inno_num: 10,
+                enabled: true,
+            },
+        ];
+
+        Genome::new(id, 0, neuron_genes, synapse_genes).expect(
+            "This test genome should be valid."
+        )
+    }
+
+    #[test_case(helper_base_genome(0), helper_base_genome(1), 10.0, 5.0, vec![0, 1, 3], vec![0, 6, 7, 10];
+        "Matching homology, one dominant")]
+    #[test_case(helper_base_genome(0), helper_base_genome(1), 10.0, 10.0, vec![0, 1, 3], vec![0, 6, 7, 10];
+        "Matching homology, both dominant")]
+    #[test_case(helper_excess_genome(0), helper_base_genome(1), 10.0, 5.0, vec![0, 1, 3, 4], vec![0, 6, 7, 10, 11, 12];
+        "Excess homology, excess dominant")]
+    #[test_case(helper_excess_genome(0), helper_base_genome(1), 5.0, 10.0, vec![0, 1, 3], vec![0, 6, 7, 10];
+        "Excess homology, base dominant")]
+    #[test_case(helper_excess_genome(0), helper_base_genome(1), 10.0, 10.0, vec![0, 1, 3, 4], vec![0, 6, 7, 10, 11, 12];
+        "Excess homology, both dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_base_genome(1), 10.0, 5.0, vec![0, 1, 2, 3], vec![0, 2, 3, 6, 7, 10];
+        "Disjoint homology, disjoint dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_base_genome(1), 5.0, 10.0, vec![0, 1, 3], vec![0, 6, 7, 10];
+        "Disjoint homology, base dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_base_genome(1), 10.0, 10.0, vec![0, 1, 2, 3], vec![0, 2, 3, 6, 7, 10];
+        "Disjoint homology, both dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_excess_genome(1), 10.0, 5.0, vec![0, 1, 2, 3], vec![0, 2, 3, 6, 7, 10];
+        "Disjoint w/ Excess homology, disjoint dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_excess_genome(1), 5.0, 10.0, vec![0, 1, 3, 4], vec![0, 6, 7, 10, 11, 12];
+        "Disjoint w/ Excess homology, excess dominant")]
+    #[test_case(helper_disjoint_genome(0), helper_excess_genome(1), 10.0, 10.0, vec![0, 1, 2, 3, 4], vec![0, 2, 3, 6, 7, 10, 11, 12];
+        "Disjoint w/ Excess homology, both dominant")]
+    #[test_case(helper_excess_genome(0), helper_disjoint_genome(1), 10.0, 10.0, vec![0, 1, 2, 3, 4], vec![0, 2, 3, 6, 7, 10, 11, 12];
+        "Excess w/ Disjoint homology, both dominant")]
+    fn test_crossover(genome1: Genome, genome2: Genome, fitness1: f64, fitness2: f64, node_result: Vec<usize>, synapse_result: Vec<usize>) {
+        let (neuron_genes, synapse_genes, _) = genome_crossover(&genome1, &genome2, fitness1, fitness2, 0.75);
+
+        let actual_nodes: Vec<usize> = neuron_genes.iter().map(|n| n.node_name).collect();
+        let actual_innos: Vec<usize> = synapse_genes.iter().map(|s| s.inno_num).collect();
+
+        assert_eq!(actual_nodes, node_result, "Neuron nodes do not match expectations");
+        assert_eq!(actual_innos, synapse_result, "Synapse innovation numbers do not match expectations");
+
+        assert!(Genome::new(2, 0, neuron_genes, synapse_genes).is_ok(), "Two valid genomes crossing over should create a valid genome.")
+    }
+
+    #[test_case(10.0, 5.0, true; "Higher weight dominant, one enable dominant")]
+    #[test_case(5.0, 10.0, true; "Higher weight recessive, one enable recessive")]
+    #[test_case(5.0, 5.0, true; "Both dominant, one enable")]
+    #[test_case(10.0, 5.0, false; "Higher weight dominant, no enable")]
+    #[test_case(5.0, 10.0, false; "Higher weight recessive, no enable")]
+    #[test_case(5.0, 5.0, false; "Both dominant, no enable")]
+    fn test_crossover_inherit_probabilities(fitness1: f64, fitness2: f64, enable1: bool) {
+        let mut genome1 = helper_base_genome(0);
+        let mut genome2 = helper_base_genome(1);
+
+        let iterations = 10_000;
+        let tolerance= 0.02;
+
+        let expected_weight_prob = 0.50;
+        let expected_disabled_prob = 0.75;
+
+        genome1.synapse_genes[0].weight = 20.0;
+        genome1.synapse_genes[0].enabled = enable1;
+
+        genome2.synapse_genes[0].weight = 10.0;
+        genome2.synapse_genes[0].enabled = false;
+
+        let mut p1_weight_count = 0;
+        let mut disabled_count = 0;
+
+        for _ in 0..iterations {
+            let (_, child_synapses, _) = genome_crossover(&genome1, &genome2, fitness1, fitness2, expected_disabled_prob);
+            let target_gene = &child_synapses[0];
+
+            if (target_gene.weight - 20.0).abs() < f64::EPSILON {
+                p1_weight_count += 1;
+            }
+            else {
+                assert!((target_gene.weight - 10.0).abs() < f64::EPSILON, "Children should not inherit a weight that belonged to neither parent!");
+            }
+
+            if !target_gene.enabled {
+                disabled_count += 1;
+            }
+        }
+
+        let observed_weight_prob = p1_weight_count as f64 / iterations as f64;
+        let observed_disabled_prob = disabled_count as f64 / iterations as f64;
+
+        assert!((observed_weight_prob - expected_weight_prob).abs() < tolerance,
+                "Weight inheritance is not within expected confidence of 50%");
+        assert!((observed_disabled_prob - expected_disabled_prob).abs() < tolerance,
+                "Disable inheritance is not within expected confidence of input of 75%");
+    }
+
+    #[test_case(10.0, 5.0; "One dominant")]
+    #[test_case(5.0, 5.0; "Both dominant")]
+    fn test_crossover_both_enabled(fitness1: f64, fitness2: f64) {
+        let mut genome1 = helper_base_genome(0);
+        let mut genome2 = helper_base_genome(1);
+
+        let iterations = 10_000;
+        let tolerance= 0.02;
+
+        let expected_disabled_prob = 0.75;
+
+        genome1.synapse_genes[0].enabled = true;
+
+        genome2.synapse_genes[0].enabled = true;
+
+        for _ in 0..iterations {
+            let (_, child_synapses, _) = genome_crossover(&genome1, &genome2, fitness1, fitness2, expected_disabled_prob);
+            let target_gene = &child_synapses[0];
+
+            assert_eq!(target_gene.enabled, true, "Children should not inherit a gene both parents have enabled as disabled.")
+        }
     }
 }

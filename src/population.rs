@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::genome::{genome_distance, Genome, NeuronGene, NeuronType, SynapseGene};
+use crate::genome::{genome_distance, genome_crossover, Genome, NeuronGene, NeuronType, SynapseGene};
 use std::ops::{Deref, DerefMut};
 use rand::distr::Uniform;
 use rand::prelude::*;
@@ -81,8 +81,8 @@ impl ActiveSpecies {
 /// Any Genome used as a starting network must have at least one active path from a sensory
 /// neuron to a muscular neuron.
 struct Population {
-    pub population_size: usize,
-    pub species_threshold: f64,
+    population_size: usize,
+    species_threshold: f64,
 
     active_species: Vec<ActiveSpecies>,
     population: Generation,
@@ -174,32 +174,45 @@ impl Population {
 
             for _ in 0..num_children {
                 let parent1_index = *self.active_species[active_index].member_indices
-                    .choose(&mut rng).expect("Pop indices will always be non-empty");
+                    .choose(&mut rng).expect("Pop indices should always be non-empty");
                 let parent1: &Genome = &self.population[parent1_index];
+                let fitness1: f64 = self.fitness[parent1_index].expect(
+                    "The fitness vector should already have been sanitized."
+                );
 
                 let (neuron_genes, synapse_genes, origin_species) =
+
+                    // No Crossover
                     if rng.random_bool(EVOLUTION_NO_CROSSOVER) {
                         let genome = &self.population[parent1_index];
                         (genome.neuron_genes().clone(), genome.synapse_genes().clone(), genome.species_history_id())
                     }
+
+                    // Interspecies Crossover
                     else if rng.random_bool(EVOLUTION_INTERSPECIES) {
-                        'found_index: {
-                            if num_active_species > 1 {
-                                let species_index = rng.random_range(0..num_active_species - 1);
-                                let species_index =
-                                    if active_index <= species_index {
-                                        species_index + 1
-                                    } else {
-                                        species_index
-                                    };
-                                let parent2_index = *self.active_species[species_index].member_indices
-                                    .choose(&mut rng).expect("Pop indices will always be non-empty");
-                                let parent2: &Genome = &self.population[parent2_index];
-                                break 'found_index self.cross_over(parent1, parent2);
-                            }
+                        if num_active_species > 1 {
+                            let species_index = rng.random_range(0..num_active_species - 1);
+                            let species_index =
+                                if active_index <= species_index {
+                                    species_index + 1
+                                } else {
+                                    species_index
+                                };
+                            let parent2_index = *self.active_species[species_index].member_indices
+                                .choose(&mut rng).expect("Pop indices will always be non-empty");
+                            let parent2: &Genome = &self.population[parent2_index];
+                            let fitness2: f64 = self.fitness[parent2_index].expect(
+                                "The fitness vector should already have been sanitized."
+                            );
+
+                            genome_crossover(parent1, parent2, fitness1, fitness2, INHERIT_DISABLE_PROB)
+                        }
+                        else {
                             (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_history_id())
                         }
                     }
+
+                    // Normal Crossover
                     else {
                         'found_index: {
                             if num_potential_parents > 1 {
@@ -210,7 +223,11 @@ impl Population {
                                         continue;
                                     }
                                     let parent2: &Genome = &self.population[parent2_index];
-                                    break 'found_index self.cross_over(parent1, parent2);
+                                    let fitness2: f64 = self.fitness[parent2_index].expect(
+                                        "The fitness vector should already have been sanitized."
+                                    );
+
+                                    break 'found_index genome_crossover(parent1, parent2, fitness1, fitness2, INHERIT_DISABLE_PROB);
                                 }
                             }
                             (parent1.neuron_genes().clone(), parent1.synapse_genes().clone(), parent1.species_history_id())
@@ -410,172 +427,6 @@ impl Population {
         }
 
         stagnating
-    }
-
-    fn cross_over(&self, genome1: &Genome, genome2: &Genome) -> (Vec<NeuronGene>, Vec<SynapseGene>, usize) {
-        let fitness1 = *self.fitness.get(genome1.id())
-            .expect("Input genomes to cross_over should always have valid ids.");
-        let fitness2 = *self.fitness.get(genome2.id())
-            .expect("Input genomes to cross_over should always have valid ids.");
-
-        // Genome with the highest fitness is considered dominant. If neither has a higher fitness,
-        // we consider both Genomes dominant.
-        let (dom_neur, dom_syna, dom_species, rec_neur, rec_syna, both_dom) = match (fitness1, fitness2) {
-            (Some(f1), Some(f2)) => {
-                if f1 > f2 {
-                    (genome1.neuron_genes(),
-                     genome1.synapse_genes(),
-                     genome1.species_history_id(),
-                     genome2.neuron_genes(),
-                     genome2.synapse_genes(),
-                     false)
-                }
-                else if f2 > f1 {
-                    (genome2.neuron_genes(),
-                     genome2.synapse_genes(),
-                     genome2.species_history_id(),
-                     genome1.neuron_genes(),
-                     genome1.synapse_genes(),
-                     false)
-                }
-                else {
-                    (genome1.neuron_genes(),
-                     genome1.synapse_genes(),
-                     genome1.species_history_id(),
-                     genome2.neuron_genes(),
-                     genome2.synapse_genes(),
-                     true)
-                }
-            },
-            (None, None) => {
-                (genome1.neuron_genes(),
-                 genome1.synapse_genes(),
-                 genome1.species_history_id(),
-                 genome2.neuron_genes(),
-                 genome2.synapse_genes(),
-                 true)
-            },
-            (Some(_), None) => {
-                (genome1.neuron_genes(),
-                 genome1.synapse_genes(),
-                 genome1.species_history_id(),
-                 genome2.neuron_genes(),
-                 genome2.synapse_genes(),
-                 false)
-            },
-            (None, Some(_)) => {
-                (genome2.neuron_genes(),
-                 genome2.synapse_genes(),
-                 genome2.species_history_id(),
-                 genome1.neuron_genes(),
-                 genome1.synapse_genes(),
-                 false)
-            }
-        };
-
-        let mut rng = rand::rng();
-
-        if both_dom {
-            // If both genomes are dominant, we have to inherit everything from both. (Note, this
-            // should almost never happen without some kind of manual intervention.)
-            let mut new_neurons: Vec<NeuronGene> = Vec::new();
-            let mut new_synapses: Vec<SynapseGene> = Vec::new();
-
-            let mut neur_iter1 = genome1.neuron_genes().iter().peekable();
-            let mut neur_iter2 = genome2.neuron_genes().iter().peekable();
-
-            while let (Some(&gene1), Some(&gene2)) = (neur_iter1.peek(), neur_iter2.peek()) {
-                if gene1.node_name < gene2.node_name {
-                    new_neurons.push(gene1.clone());
-                    neur_iter1.next();
-                }
-                else if gene2.node_name < gene1.node_name {
-                    new_neurons.push(gene2.clone());
-                    neur_iter2.next();
-                }
-                else {
-                    new_neurons.push(gene1.clone());
-                    neur_iter1.next();
-                    neur_iter2.next();
-                }
-            }
-
-            let mut syna_iter1 = genome1.synapse_genes().iter().peekable();
-            let mut syna_iter2 = genome2.synapse_genes().iter().peekable();
-
-            while let (Some(&gene1), Some(&gene2)) = (syna_iter1.peek(), syna_iter2.peek()) {
-                if gene1.inno_num < gene2.inno_num {
-                    new_synapses.push(gene1.clone());
-                    syna_iter1.next();
-                }
-                else if gene2.inno_num < gene1.inno_num {
-                    new_synapses.push(gene2.clone());
-                    syna_iter2.next();
-                }
-                else {
-                    let mut syna_gene = if rng.random_bool(0.5) {
-                        gene1.clone()
-                    }
-                    else {
-                        gene2.clone()
-                    };
-
-                    if !gene1.enabled || !gene2.enabled {
-                        syna_gene.enabled = !rng.random_bool(INHERIT_DISABLE_PROB);
-                    }
-
-                    new_synapses.push(syna_gene);
-                    syna_iter1.next();
-                    syna_iter2.next();
-                }
-            }
-            while let Some(&gene) = syna_iter1.peek() {
-                new_synapses.push(gene.clone());
-                syna_iter1.next();
-            }
-            while let Some(&gene) = syna_iter2.peek() {
-                new_synapses.push(gene.clone());
-                syna_iter2.next();
-            }
-
-            return (new_neurons, new_synapses, dom_species);
-        }
-
-        // If one of the Genomes is dominant, then we inherit everything disjoint or excess from
-        // the dominant Genome and none of these from the recessive Genome.
-        let child_neurons = dom_neur.clone();
-        let mut child_synapses = dom_syna.clone();
-
-        let mut rec_iter = rec_syna.iter().peekable();
-
-        // For any shared gene between the two Genomes, the weights are inherited from one Genome or
-        // the other at a 50/50 probability. If one of the shared genes is disabled, then there is
-        // a DISABLE_PROB (75%) chance of the inherited gene being disabled.
-        for child_genes in child_synapses.iter_mut() {
-            while let Some(&rec_gene) = rec_iter.peek() {
-                if rec_gene.inno_num < child_genes.inno_num {
-                    rec_iter.next();
-                }
-                else {
-                    break;
-                }
-            }
-
-            if let Some(&rec_gene) = rec_iter.peek(){
-                if rec_gene.inno_num == child_genes.inno_num {
-                    if rng.random_bool(0.5) {
-                        child_genes.weight = rec_gene.weight;
-                    }
-                    if !child_genes.enabled || !rec_gene.enabled {
-                        child_genes.enabled = !rng.random_bool(INHERIT_DISABLE_PROB);
-                    }
-
-                    rec_iter.next();
-                }
-            }
-        }
-
-        (child_neurons, child_synapses, dom_species)
     }
 
     fn mutate(&mut self,
@@ -782,3 +633,10 @@ impl Population {
 
 }
 
+#[cfg(test)]
+mod population_test {
+    use super::*;
+    use test_case::test_case;
+
+
+}
