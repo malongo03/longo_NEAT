@@ -29,9 +29,9 @@ pub struct NeuronGene {
 #[derive(Debug, Clone)]
 pub struct SynapseGene {
     /// Index of neuron sending signal.
-    pub outgoing_id: usize,
+    pub src_id: usize,
     /// Index of neuron receiving signal.
-    pub incoming_id: usize,
+    pub tgt_id: usize,
     /// Weight multiplier of signal.
     pub weight: f64,
     /// Innovation number of this gene. (See: mutation,
@@ -51,19 +51,13 @@ pub struct SynapseGene {
 ///
 /// ***id: usize*** - Index of a genome within a Population.
 ///
-/// ***species_hist: usize*** - Index of the species within the History of a Population.
-///
-/// ***species_gen: usize*** - Index of the species within the current Generation.
+/// ***species_hist_index: usize*** - Index of the species within the History of a Population.
 ///
 /// ***neuron_genes: Vec<NeuronGene>*** - List of genes for nodes in the neural network.
 ///
 /// ***synapse_genes: Vec<SynapseGene>*** - List of genes for edges in the neural network.
 ///
 /// # Interface Contract
-///
-/// *id* will be greater than or equal to *species_gen*
-///
-/// *species_hist* will be greater than or equal to *species_gen*
 ///
 /// *neuron_genes* is sorted by node_name and has no duplicates
 ///
@@ -84,20 +78,23 @@ pub struct SynapseGene {
 pub struct Genome {
     /// Index of a genome within a Population.
     id: usize,
-    /// Index of the species within the History of a Population.
-    species_hist: usize,
-    /// Index of the species within the current Generation.
-    species_gen: usize,
+    /// Index of the species as it arose in evolution.
+    species_hist_index: usize,
     neuron_genes: Vec<NeuronGene>,
     synapse_genes: Vec<SynapseGene>,
 }
 impl Genome {
     /// Create a Genome object. This function guarantees the Genome is compatible with Population's
     /// and Neural_Network's assumptions.
-    pub fn new(id: usize, species_hist: usize, species_gen: usize, neuron_genes: Vec<NeuronGene>,
+    pub fn new(id: usize, species_hist_index: usize, neuron_genes: Vec<NeuronGene>,
                synapse_genes: Vec<SynapseGene>) -> Result<Genome, Box<dyn Error>> {
 
-        let new_genome = Self{id, species_hist, species_gen, neuron_genes, synapse_genes};
+        let new_genome = Self {
+            id,
+            species_hist_index,
+            neuron_genes,
+            synapse_genes
+        };
 
         if let Err(error) = new_genome.check_assumptions(){
             return Err(error);
@@ -108,16 +105,12 @@ impl Genome {
     /// Create a Genome object without a guarantee that it is valid for Population,
     /// Neural_Network, and genome_distance. This should only ever be used if your function has been
     /// validated to never trigger a check_assumptions error.
-    pub fn new_no_check(id: usize, species_hist: usize, species_gen: usize,
-                        neuron_genes: Vec<NeuronGene>, synapse_genes: Vec<SynapseGene>) -> Genome {
-        Self{id, species_hist, species_gen, neuron_genes, synapse_genes}
+    pub fn new_no_check(id: usize, species_hist: usize, neuron_genes: Vec<NeuronGene>,
+                        synapse_genes: Vec<SynapseGene>) -> Genome {
+        Self{id, species_hist_index: species_hist, neuron_genes, synapse_genes}
     }
 
     /// Checks for the following possible violations of Genome's parameters:
-    ///
-    /// *id* is less than *species_gen*.
-    ///
-    /// *species_hist* is less than *species_gen*
     ///
     /// *neuron_genes* has duplicate node_names or is not sorted by node_name.
     ///
@@ -137,17 +130,6 @@ impl Genome {
     ///
     /// The Genome has no Muscular neurons.
     pub fn check_assumptions(&self) -> Result<(), Box<dyn Error>> {
-
-        if self.id < self.species_gen {
-            return Err("A Genome's id should never be smaller than its species generation index. \
-            This suggests a violation of order in Population's interface contract.".into())
-        }
-
-        if self.species_hist < self.species_gen {
-            return Err("A species' historical index should never be smaller than its species \
-            generation index. This suggests a violation Population's interface contract.".into())
-        }
-
         let mut seen_nodes: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
         let mut prev_name: Option<usize> = None;
 
@@ -162,8 +144,8 @@ impl Genome {
 
         let mut prev_inno: Option<usize> = None;
         let mut seen_edges: HashSet<(usize, usize)> = HashSet::with_capacity(self.synapse_genes.len());
-        let mut has_outgoing: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
-        let mut has_incoming: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
+        let mut is_src: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
+        let mut is_tgt: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
 
         for gene in &self.synapse_genes {
             if prev_inno.is_some_and(|prev| prev >= gene.inno_num) {
@@ -171,16 +153,16 @@ impl Genome {
             }
             prev_inno = Some(gene.inno_num);
 
-            let edge_pair: (usize, usize) = (gene.outgoing_id, gene.incoming_id);
+            let edge_pair: (usize, usize) = (gene.src_id, gene.tgt_id);
             if !seen_edges.insert(edge_pair) {
                 return Err("Genome contains duplicate edge pair.".into())
             }
-            if !seen_nodes.contains(&gene.outgoing_id) || !seen_nodes.contains(&gene.incoming_id) {
+            if !seen_nodes.contains(&gene.src_id) || !seen_nodes.contains(&gene.tgt_id) {
                 return Err("synapse_genes should not have edges to or from nodes the Genome lacks.".into())
             }
 
-            has_outgoing.insert(gene.outgoing_id);
-            has_incoming.insert(gene.incoming_id);
+            is_src.insert(gene.src_id);
+            is_tgt.insert(gene.tgt_id);
         }
 
         let mut has_sensory: bool = false;
@@ -190,21 +172,21 @@ impl Genome {
             match node.neuron_type {
                 NeuronType::Sensory(_) => {
                     has_sensory = true;
-                    if has_incoming.contains(&node.node_name) {
+                    if is_tgt.contains(&node.node_name) {
                         return Err("Sensory neurons should have no input edges.".into());
                     }
                 }
                 NeuronType::Inter() => {
-                    if !has_incoming.contains(&node.node_name) {
+                    if !is_tgt.contains(&node.node_name) {
                         return Err("Inter neurons should have at least one input edge.".into());
                     }
-                    if !has_outgoing.contains(&node.node_name) {
+                    if !is_src.contains(&node.node_name) {
                         return Err("Inter neurons should have at least one output edge.".into());
                     }
                 }
                 NeuronType::Muscular(_) => {
                     has_muscular = true;
-                    if !has_incoming.contains(&node.node_name) {
+                    if !is_tgt.contains(&node.node_name) {
                         return Err("Muscular neurons should have at least one input edge.".into());
                     }
                 }
@@ -230,10 +212,7 @@ impl Genome {
     pub fn id(&self) -> usize {self.id}
 
     /// Index of the species within the History of a Population.
-    pub fn species_hist(&self) -> usize {self.species_hist}
-
-    /// Index of the species within the current Generation.
-    pub fn species_gen(&self) -> usize {self.species_gen}
+    pub fn species_hist_index(&self) -> usize {self.species_hist_index }
 
     /// List of genes for nodes in the neural network.
     pub fn neuron_genes(&self) -> &Vec<NeuronGene> {&self.neuron_genes}
@@ -262,12 +241,12 @@ impl Genome {
 /// **excess_weight: f64** - The weighting of "excess" genes.
 ///
 /// **weight_diff_weight: f64** - The weighting of the average weight difference between shared genes
-pub fn genome_distance(first: &Genome, second: &Genome,
+pub fn genome_distance(first: &Vec<SynapseGene>, second: &Vec<SynapseGene>,
                        disjoint_weight: f64, excess_weight: f64, weight_diff_weight: f64) -> f64 {
-    let mut iter1 = first.synapse_genes.iter().peekable();
-    let mut iter2 = second.synapse_genes.iter().peekable();
+    let mut iter1 = first.iter().peekable();
+    let mut iter2 = second.iter().peekable();
 
-    let size_factor: f64 = max(first.genome_size(), second.genome_size()) as f64;
+    let size_factor: f64 = max(first.len(), second.len()) as f64;
     let size_factor: f64 = if size_factor < 20.0 { 1.0 } else { size_factor };
 
     let mut excess: f64 = 0.0;
@@ -316,8 +295,8 @@ mod genome_tests {
 
     fn helper_mock_synapse(inno_num: usize, weight: f64) -> SynapseGene {
         SynapseGene{
-            outgoing_id: 0,
-            incoming_id: 1,
+            src_id: 0,
+            tgt_id: 1,
             weight,
             inno_num,
             enabled: true,
@@ -325,7 +304,7 @@ mod genome_tests {
     }
 
     fn helper_mock_genome(synapses: Vec<SynapseGene>) -> Genome {
-        Genome::new_no_check(0, 0, 0, vec![], synapses)
+        Genome::new_no_check(0, 0, vec![], synapses)
     }
     
     fn helper_mock_valid_network() -> (Vec<NeuronGene>, Vec<SynapseGene>) {
@@ -335,8 +314,8 @@ mod genome_tests {
             NeuronGene{node_name: 2, neuron_type: NeuronType::Muscular(0)}
         ];
         let synapses = vec![
-            SynapseGene{outgoing_id:0, incoming_id: 1, weight: 1.0, inno_num: 0, enabled: true},
-            SynapseGene{outgoing_id:1, incoming_id: 2, weight: 1.0, inno_num: 1, enabled: true},
+            SynapseGene{ src_id:0, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true},
+            SynapseGene{ src_id:1, tgt_id: 2, weight: 1.0, inno_num: 1, enabled: true},
         ];
 
         (neurons, synapses)
@@ -347,29 +326,15 @@ mod genome_tests {
     #[test]
     fn test_valid_base_network() {
         let (n, s) = helper_mock_valid_network();
-        assert!(Genome::new(5, 5, 5, n, s).is_ok(),
+        assert!(Genome::new(5, 5, n, s).is_ok(),
                 "The basic test network should be a valid genome")
-    }
-
-    #[test]
-    fn test_invalid_id_less_than_species_gen() {
-        let (n, s) = helper_mock_valid_network();
-        assert!(Genome::new(4, 5, 5, n, s).is_err(),
-                "Genome::new should return an error if id < species_gen")
-    }
-
-    #[test]
-    fn test_invalid_species_hist_less_than_species_gen() {
-        let (n, s) = helper_mock_valid_network();
-        assert!(Genome::new(5, 4, 5, n, s).is_err(),
-                "Genome::new should return an error if species_hist < species_gen")
     }
 
     #[test]
     fn test_invalid_unsorted_neurons() {
         let (mut n, s) = helper_mock_valid_network();
         n.swap(0, 1);
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if neuron_genes is not sorted by node_name");
     }
 
@@ -377,7 +342,7 @@ mod genome_tests {
     fn test_invalid_duplicate_node_names() {
         let (mut n, s) = helper_mock_valid_network();
         n[1].node_name = 0; // Two node_name 0s
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if there are duplicate node names");
     }
 
@@ -385,7 +350,7 @@ mod genome_tests {
     fn test_invalid_unsorted_synapses() {
         let (n, mut s) = helper_mock_valid_network();
         s.swap(0, 1);
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if synapses are not sorted by inno_num");
     }
 
@@ -393,24 +358,24 @@ mod genome_tests {
     fn test_invalid_duplicate_inno_nums() {
         let (n, mut s) = helper_mock_valid_network();
         s[1].inno_num = 0;
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if there are duplicate inno nums");
     }
 
     #[test]
     fn test_invalid_duplicate_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s[1].outgoing_id = 0;
-        s[1].incoming_id = 1;
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        s[1].src_id = 0;
+        s[1].tgt_id = 1;
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome:new should return an error if there is a duplicate edge");
     }
 
     #[test]
     fn test_invalid_missing_node_reference() {
         let (n, mut s) = helper_mock_valid_network();
-        s[0].incoming_id = 99;
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        s[0].tgt_id = 99;
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome:new should return an error if node is referenced in synapse_genes that is \
                 missing in node_genes");
     }
@@ -418,8 +383,8 @@ mod genome_tests {
     #[test]
     fn test_invalid_sensory_with_input_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s.push(SynapseGene { outgoing_id: 2, incoming_id: 0, weight: 1.0, inno_num: 2, enabled: true });
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        s.push(SynapseGene { src_id: 2, tgt_id: 0, weight: 1.0, inno_num: 2, enabled: true });
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if a Sensory neuron has an input edge");
     }
 
@@ -427,7 +392,7 @@ mod genome_tests {
     fn test_invalid_inter_missing_input_edge() {
         let (n, mut s) = helper_mock_valid_network();
         s.remove(0);
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if an Inter neuron has no input edge");
     }
 
@@ -435,15 +400,15 @@ mod genome_tests {
     fn test_invalid_inter_missing_output_edge() {
         let (n, mut s) = helper_mock_valid_network();
         s.remove(1);
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if an Inter neuron has no output edge");
     }
 
     #[test]
     fn test_invalid_muscular_missing_input_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s[1].incoming_id = 1;
-        assert!(Genome::new(5, 5, 5, n, s).is_err(),
+        s[1].tgt_id = 1;
+        assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if a muscular neuron has no input edge");
     }
 
@@ -454,10 +419,10 @@ mod genome_tests {
             NeuronGene { node_name: 2, neuron_type: NeuronType::Muscular(0) },
         ];
         let no_sensory_s = vec![
-            SynapseGene { outgoing_id: 1, incoming_id: 1, weight: 1.0, inno_num: 0, enabled: true },
-            SynapseGene { outgoing_id: 1, incoming_id: 2, weight: 1.0, inno_num: 1, enabled: true },
+            SynapseGene { src_id: 1, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true },
+            SynapseGene { src_id: 1, tgt_id: 2, weight: 1.0, inno_num: 1, enabled: true },
         ];
-        assert!(Genome::new(5, 5, 5, no_sensory_n, no_sensory_s).is_err(),
+        assert!(Genome::new(5, 5, no_sensory_n, no_sensory_s).is_err(),
                 "Genome::new should return an error if there is no Sensory neuron in neuron_genes");
     }
 
@@ -468,10 +433,10 @@ mod genome_tests {
             NeuronGene { node_name: 1, neuron_type: NeuronType::Inter() },
         ];
         let no_muscular_s = vec![
-            SynapseGene { outgoing_id: 0, incoming_id: 1, weight: 1.0, inno_num: 0, enabled: true },
-            SynapseGene { outgoing_id: 1, incoming_id: 1, weight: 1.0, inno_num: 1, enabled: true },
+            SynapseGene { src_id: 0, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true },
+            SynapseGene { src_id: 1, tgt_id: 1, weight: 1.0, inno_num: 1, enabled: true },
         ];
-        assert!(Genome::new(5, 5, 5, no_muscular_n, no_muscular_s).is_err(),
+        assert!(Genome::new(5, 5, no_muscular_n, no_muscular_s).is_err(),
                 "Genome::new should return an error if there is no Muscular neuron in neuron_genes");
     }
 
@@ -519,7 +484,7 @@ mod genome_tests {
         let g1 = helper_mock_genome(s1);
         let g2 = helper_mock_genome(s2);
 
-        let actual_distance = genome_distance(&g1, &g2, d_weight, e_weight, w_weight);
+        let actual_distance = genome_distance(g1.synapse_genes(), g2.synapse_genes(), d_weight, e_weight, w_weight);
 
         assert!(
             (actual_distance - expected_distance).abs() < f64::EPSILON,
