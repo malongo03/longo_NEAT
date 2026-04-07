@@ -2,10 +2,10 @@ use std::cmp::max;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Debug;
-use rand::RngExt;
+use rand::prelude::*;
 
 /// The type of a neuron described by a NetworkNode or a NeuronGene.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeuronType {
     /// A neuron that takes in only a simulation/sensory input.
     /// Its internal value points to its input source index.
@@ -207,18 +207,23 @@ impl Genome {
     // GETTERS
 
     /// In NEAT, genome size is the number of edge/synapse genes (not the number of nodes).
+    #[inline]
     pub fn genome_size(&self) -> usize {self.synapse_genes.len()}
 
     // Index of a genome within a Population.
+    #[inline]
     pub fn id(&self) -> usize {self.id}
 
     /// Index of the species within the History of a Population.
+    #[inline]
     pub fn species_history_id(&self) -> usize {self.species_history_id }
 
     /// List of genes for nodes in the neural network.
+    #[inline]
     pub fn neuron_genes(&self) -> &Vec<NeuronGene> {&self.neuron_genes}
 
     /// List of genes for edges in the neural network.
+    #[inline]
     pub fn synapse_genes(&self) -> &Vec<SynapseGene> {&self.synapse_genes}
 }
 
