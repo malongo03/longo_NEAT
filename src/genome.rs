@@ -87,8 +87,11 @@ pub struct Genome {
 impl Genome {
     /// Create a Genome object. This function guarantees the Genome is compatible with Population's
     /// and Neural_Network's assumptions.
-    pub fn new(id: usize, species_history_id: usize, neuron_genes: Vec<NeuronGene>,
-               synapse_genes: Vec<SynapseGene>) -> Result<Genome, Box<dyn Error>> {
+    pub fn new(id: usize, 
+               species_history_id: usize, 
+               neuron_genes: Vec<NeuronGene>,
+               synapse_genes: Vec<SynapseGene>) 
+        -> Result<Genome, Box<dyn Error>> {
 
         let new_genome = Self {
             id,
@@ -106,9 +109,12 @@ impl Genome {
     /// Create a Genome object without a guarantee that it is valid for Population,
     /// Neural_Network, and genome_distance. This should only ever be used if your function has been
     /// validated to never trigger a check_assumptions error.
-    pub fn new_no_check(id: usize, species_hist: usize, neuron_genes: Vec<NeuronGene>,
-                        synapse_genes: Vec<SynapseGene>) -> Genome {
-        Self{id, species_history_id: species_hist, neuron_genes, synapse_genes}
+    pub fn new_no_check(id: usize, 
+                        species_history_id: usize, 
+                        neuron_genes: Vec<NeuronGene>,
+                        synapse_genes: Vec<SynapseGene>) 
+        -> Genome {
+        Self{id, species_history_id, neuron_genes, synapse_genes}
     }
 
     /// Checks for the following possible violations of Genome's parameters:
@@ -130,7 +136,8 @@ impl Genome {
     /// The Genome has no Sensory neurons.
     ///
     /// The Genome has no Muscular neurons.
-    pub fn check_assumptions(&self) -> Result<(), Box<dyn Error>> {
+    pub fn check_assumptions(&self) 
+        -> Result<(), Box<dyn Error>> {
         let mut seen_nodes: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
         let mut prev_name: Option<usize> = None;
 
@@ -473,8 +480,10 @@ mod genome_tests {
 
         (neurons, synapses)
     }
-
-    /// # VALID/INVALID GENOME TESTS
+    
+    /////////////////////////////////
+    // VALID/INVALID GENOME TESTS //
+    ////////////////////////////////
 
     #[test]
     fn test_valid_base_network() {
@@ -593,7 +602,9 @@ mod genome_tests {
                 "Genome::new should return an error if there is no Muscular neuron in neuron_genes");
     }
 
-    /// # GENOME DISTANCE MATH TESTS
+    ////////////////////////////////
+    // GENOME DISTANCE MATH TESTS //
+    ////////////////////////////////
 
     // Format: #[test_case(synapses1, synapses2, d_weight, e_weight, w_weight, expected_distance)]
     #[test_case(
@@ -645,7 +656,9 @@ mod genome_tests {
         )
     }
 
-    /// # GENOME CROSSOVER TESTS
+    //////////////////////////////
+    // # GENOME CROSSOVER TESTS //
+    //////////////////////////////
 
     /// node_nums = [0, 1, 3]
     /// inno_nums = [0, 6, 7, 10]
