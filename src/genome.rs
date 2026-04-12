@@ -93,6 +93,10 @@ impl Genome {
                synapse_genes: Vec<SynapseGene>) 
         -> Result<Genome, Box<dyn Error>> {
 
+
+        // TODO: This has been pointed out to me to be unidiomatic: A genome object should never be
+        // created in an invalid state. We should be checking the inputs and then returning the
+        // object.
         let new_genome = Self {
             id,
             species_history_id,
@@ -109,11 +113,11 @@ impl Genome {
     /// Create a Genome object without a guarantee that it is valid for Population,
     /// Neural_Network, and genome_distance. This should only ever be used if your function has been
     /// validated to never trigger a check_assumptions error.
-    pub fn new_no_check(id: usize, 
-                        species_history_id: usize, 
-                        neuron_genes: Vec<NeuronGene>,
-                        synapse_genes: Vec<SynapseGene>) 
-        -> Genome {
+    pub fn new_unchecked(id: usize,
+                         species_history_id: usize,
+                         neuron_genes: Vec<NeuronGene>,
+                         synapse_genes: Vec<SynapseGene>)
+                         -> Genome {
         Self{id, species_history_id, neuron_genes, synapse_genes}
     }
 
@@ -136,6 +140,8 @@ impl Genome {
     /// The Genome has no Sensory neurons.
     ///
     /// The Genome has no Muscular neurons.
+    ///
+    /// TODO, better error handling with a proper error type
     pub fn check_assumptions(&self) 
         -> Result<(), Box<dyn Error>> {
         let mut seen_nodes: HashSet<usize> = HashSet::with_capacity(self.neuron_genes.len());
@@ -464,7 +470,7 @@ mod genome_tests {
     }
 
     fn helper_mock_genome(synapses: Vec<SynapseGene>) -> Genome {
-        Genome::new_no_check(0, 0, vec![], synapses)
+        Genome::new_unchecked(0, 0, vec![], synapses)
     }
     
     fn helper_mock_valid_network() -> (Vec<NeuronGene>, Vec<SynapseGene>) {

@@ -1,17 +1,36 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::num::NonZeroUsize;
 use crate::genome::{genome_distance, genome_crossover, Genome, NeuronGene, NeuronType, SynapseGene};
 use std::ops::{Deref, DerefMut};
 use rand::prelude::*;
-use crate::mutation::mutate;
+use crate::mutation::{mutate, mutate_no_structure_change, MutationParameters};
+
+// TODO: History should probably be refactored to its own module for library purposes.
+// A lot of access functions will probably be created for it.
 
 struct SpeciesHistory {
     id: usize,
     birth_gen: usize,
-    origin_species: usize,
+    origin_species: Option<usize>,
     extinct_gen: Option<usize>,
     max_fitness: Vec<f64>,
-    generation_indices: Vec<usize>,
+
+    /// Of the following format:
+    /// history_index_by_gen
+    history_index_by_generation: Vec<usize>,
+}
+impl SpeciesHistory {
+    fn new(id: usize, birth_gen: usize, origin_species: Option<usize>) -> Self {
+        Self {
+            id,
+            birth_gen,
+            origin_species,
+            extinct_gen: None,
+            max_fitness: vec![],
+            history_index_by_generation: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,11 +47,21 @@ impl DerefMut for Generation {
     }
 }
 
-struct History {
+pub struct History {
     reprs: Vec<Generation>,
     bests: Vec<Generation>,
     max_fitness: Vec<f64>,
     species: Vec<SpeciesHistory>,
+}
+impl History {
+    fn new_blank() -> Self {
+        Self {
+            reprs: vec![],
+            bests: vec![],
+            max_fitness: vec![],
+            species: vec![],
+        }
+    }
 }
 
 // Eventually, these will all be made actual settings
@@ -59,7 +88,6 @@ impl ActiveSpecies {
         Self {
             species_history_id,
             member_indices: Vec::new(),
-
             last_improvement_counter: 0,
             last_improvement_fitness: f64::NEG_INFINITY,
         }
@@ -68,11 +96,11 @@ impl ActiveSpecies {
 
 /// # Interface Contract
 ///
-/// Any Genome used as a starting network must have at least one active path from a sensory
-/// neuron to a muscular neuron.
+///
 pub struct Population {
-    population_size: usize,
+    population_size: NonZeroUsize,
     species_threshold: f64,
+    mutation_parameters: MutationParameters,
 
     active_species: Vec<ActiveSpecies>,
     population: Generation,
@@ -85,16 +113,115 @@ pub struct Population {
 
     last_improvement_counter: usize,
     last_improvement_fitness: f64,
-
     history: History
 }
 impl Population {
 
-    pub fn new(population_size: usize,
+    // TODO: Better error handling with a proper error type
+    // TODO: Some of this functionality can definitely be merged with next_generation
+    pub fn new_from_base(population_size: NonZeroUsize,
                species_threshold: f64,
-               starting_genome: Option<Genome>)
-        -> Self {
-        todo!()
+               starting_genome: Genome)
+        -> Result<Self, Box<dyn Error>> {
+
+        if species_threshold <= 0.0 {
+            return Err("species_threshold must be strictly positive".into());
+        }
+        starting_genome.check_assumptions()?;
+
+        let mutation_parameters = MutationParameters::default_params();
+
+        let fitness: Vec<Option<f64>> = vec![None; population_size.get()];
+
+        let next_inno_index: Option<usize> = starting_genome.synapse_genes().iter().map(|gene| gene.inno_num).max();
+        let next_inno_index: usize = if let Some(inno_index) = next_inno_index {inno_index + 1} else {0};
+        let next_node_index: Option<usize> = starting_genome.neuron_genes().iter().map(|gene| gene.node_name).max();
+        let next_node_index: usize = if let Some(node_index) = next_node_index {node_index + 1} else {0};
+        let mut next_species_id: usize = 1;
+        let generation_index: usize = 0;
+
+        let last_improvement_counter = 0;
+        let last_improvement_fitness: f64 = f64::NEG_INFINITY;
+
+        // Populating population //
+
+        let mut rng = rand::rng();
+
+        let mut active_species: Vec<ActiveSpecies> = vec![ActiveSpecies::new(0)];
+        let mut population: Generation = Generation(Vec::with_capacity(population_size.get()));
+        let mut anchors: Vec<Genome> = Vec::new();
+        let mut history = History::new_blank();
+        history.species.push(SpeciesHistory::new(0, 0, None));
+
+        // Create clone of the starting genome to act as an initial anchor
+        let seed_genome = Genome::new_unchecked(
+            0,
+            0,
+            starting_genome.neuron_genes().clone(),
+            starting_genome.synapse_genes().clone(),
+        );
+        anchors.push(seed_genome.clone());
+        population.push(seed_genome);
+        active_species[0].member_indices.push(0);
+
+        for id in 1..population_size.get() {
+            let mutated_synapses = mutate_no_structure_change(&mut rng, &mutation_parameters, starting_genome.synapse_genes().clone());
+
+            let species_index: Option<usize> = anchors
+                .iter()
+                .enumerate()
+                .find(|(_, anchor)| {
+                    genome_distance(
+                        &mutated_synapses,
+                        anchor.synapse_genes(),
+                        DISTANCE_DISJOINT_WEIGHT,
+                        DISTANCE_EXCESS_WEIGHT,
+                        DISTANCE_WEIGHT_DIFF_WEIGHT,
+                    ) <= species_threshold
+                })
+                .map(|(active_index, _)| active_index);
+
+            let (species_index, push_anchor) =
+                if let Some(index) = species_index {
+                    (index, false)
+                }
+                else {
+                    let index = next_species_id;
+                    next_species_id += 1;
+
+                    active_species.push(ActiveSpecies::new(index));
+                    history.species.push(SpeciesHistory::new(index, 0, Some(0)));
+
+                    (index, true)
+                };
+
+            active_species[species_index].member_indices.push(id);
+
+            let genome = Genome::new_unchecked(id, species_index, starting_genome.neuron_genes().clone(), mutated_synapses);
+
+            if push_anchor {anchors.push(genome.clone())}
+
+            population.push(genome);
+        }
+
+        Ok(Self{
+            population_size,
+            species_threshold,
+            mutation_parameters,
+
+            active_species,
+            population,
+            fitness,
+
+            next_inno_index,
+            next_node_index,
+            next_species_id,
+            generation_index,
+
+            last_improvement_counter,
+            last_improvement_fitness,
+            history,
+        })
     }
 
     pub fn insert_fitness(&mut self,
@@ -106,7 +233,7 @@ impl Population {
         if fitness.is_infinite() {
             return Err("Inserted fitness should not be infinite".into())
         }
-        if id >= self.population_size {
+        if id >= self.population_size.get() {
             return Err("Population id out of bounds".into())
         }
         self.fitness[id] = Some(fitness);
@@ -129,7 +256,7 @@ impl Population {
         let stagnating_species: Vec<bool> = self.check_for_stagnation(best_fitness_per_species);
 
         // 3. Determine allotments for each active species
-        let allotted_children = Population::allot_children(self.population_size, average_fitness_per_species, stagnating_species);
+        let allotted_children = Population::allot_children(self.population_size.get(), average_fitness_per_species, stagnating_species);
 
         // 4. Produce new generation, sorted into proper species
         let (new_indices, new_generation) = self.reproduce(&mut rng, champions, anchors, allotted_children);
@@ -199,7 +326,7 @@ impl Population {
 
             // 5
             self.history.species[active_species.species_history_id].max_fitness.push(champion_fitness);
-            self.history.species[active_species.species_history_id].generation_indices.push(active_index);
+            self.history.species[active_species.species_history_id].history_index_by_generation.push(active_index);
         }
 
         // 6. Save current generation's genomes for historical analysis
@@ -384,12 +511,13 @@ impl Population {
                 let (neuron_genes, synapse_genes, origin_species) = self.breed_species(rng, num_active_species, active_index, num_potential_parents);
 
                 let (neuron_genes, synapse_genes) = mutate(&mut rng,
+                                                           &self.mutation_parameters,
                                                            &mut self.next_inno_index,
                                                            &mut self.next_node_index,
-                                                           neuron_genes,
-                                                           synapse_genes,
                                                            &mut new_innos,
-                                                           &mut new_nodes);
+                                                           &mut new_nodes,
+                                                           neuron_genes,
+                                                           synapse_genes);
 
                 self.sort_and_place_new_genome(&mut new_generation,
                                                &mut new_indices,
@@ -472,20 +600,20 @@ impl Population {
                                  origin_species: usize) {
         let id = new_generation.len();
 
-        let species_indices: Option<(usize, usize)> = 'found_index: {
-            for (active_index, anchor) in anchors.iter().enumerate() {
-                let distance: f64 = genome_distance(&new_synapse_genes,
-                                                    anchor.synapse_genes(),
-                                                    DISTANCE_DISJOINT_WEIGHT,
-                                                    DISTANCE_EXCESS_WEIGHT,
-                                                    DISTANCE_WEIGHT_DIFF_WEIGHT);
+        let species_indices: Option<(usize, usize)> = anchors
+            .iter()
+            .enumerate()
+            .find(|(_, anchor)| {
+                genome_distance(
+                    &new_synapse_genes,
+                    anchor.synapse_genes(),
+                    DISTANCE_DISJOINT_WEIGHT,
+                    DISTANCE_EXCESS_WEIGHT,
+                    DISTANCE_WEIGHT_DIFF_WEIGHT,
+                ) <= self.species_threshold
+            })
+            .map(|(active_index, anchor)| (active_index, anchor.species_history_id()));
 
-                if distance <= self.species_threshold {
-                    break 'found_index Some((active_index, anchor.species_history_id()))
-                }
-            }
-            None
-        };
         let (active_index, hist_index, push_anchor) =
             if let Some((active_index, hist_index)) = species_indices {
                 (active_index, hist_index, false)
@@ -498,14 +626,7 @@ impl Population {
 
                 new_indices.push(Vec::with_capacity(1));
                 self.active_species.push(ActiveSpecies::new(species_history_id));
-                self.history.species.push(SpeciesHistory{
-                    id: species_history_id,
-                    birth_gen: self.generation_index,
-                    origin_species,
-                    extinct_gen: None,
-                    max_fitness: Vec::new(),
-                    generation_indices: Vec::new(),
-                });
+                self.history.species.push(SpeciesHistory::new(species_history_id, self.generation_index, Some(origin_species)));
 
                 (active_index, species_history_id, true)
             };
@@ -518,9 +639,7 @@ impl Population {
                                  new_synapse_genes)
             .expect("new_generation should not produce an invalid Genome");
 
-        if push_anchor {
-            anchors.push(genome.clone());
-        }
+        if push_anchor {anchors.push(genome.clone());}
 
         new_generation.push(genome);
     }
@@ -559,10 +678,7 @@ mod population_test {
     //////////////////////////
 
     #[test]
-    fn test_new_pop_default(){todo!()}
-
-    #[test]
-    fn test_new_pop_template(){todo!()}
+    fn test_new_pop(){todo!()}
 
     //////////////////////////
     // INSERT_FITNESS TESTS //

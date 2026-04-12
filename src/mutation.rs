@@ -4,32 +4,79 @@ use rand::distr::Uniform;
 use rand::prelude::*;
 use crate::genome::{NeuronGene, NeuronType, SynapseGene};
 
-const MUTATE_GENE_WEIGHT: f64 = 0.8;
-const MUTATE_RANDOM_WEIGHT: f64 = 0.1;
-const MUTATE_ENABLE_PROB: f64 = 0.05;
-const MUTATE_DISABLE_PROB: f64 = 0.005;
-const MUTATION_POWER: f64 = 2.5;
-const MUTATE_NEW_EDGE: f64 = 0.05;
-const MUTATE_NEW_NODE: f64 = 0.03;
+pub struct MutationParameters {
+    mutate_edge_weight_prob: f64,
+    mutate_edge_random_weight_prob: f64,
+    mutate_enable_prob: f64,
+    mutate_disable_prob: f64,
+    mutation_power: f64,
+    mutate_new_edge_prob: f64,
+    mutate_new_node_prob: f64,
 
-const CAP_WEIGHT: f64 = 8.0;
-const CAP_NEW_WEIGHT: f64 = 1.0;
+    edge_weight_cap: f64,
+    edge_new_weight_cap: f64,
+}
+impl MutationParameters {
+    pub fn default_params() -> Self {
+        Self{
+            mutate_edge_weight_prob: 0.8,
+            mutate_edge_random_weight_prob: 0.1,
+            mutate_enable_prob: 0.05,
+            mutate_disable_prob: 0.005,
+            mutation_power: 2.5,
+            mutate_new_edge_prob: 0.05,
+            mutate_new_node_prob: 0.03,
+            edge_weight_cap: 8.0,
+            edge_new_weight_cap: 1.0,
+        }
+    }
+}
+
+pub fn mutate_no_structure_change<R: Rng>(rng: &mut R,
+                                          params: &MutationParameters,
+                                          mut synapse_genes: Vec<SynapseGene>)
+    -> Vec<SynapseGene> {
+    let weight_dist = Uniform::new_inclusive(-params.mutation_power, params.mutation_power)
+        .expect("Mutation power should be strictly positive and finite.");
+
+    // Mutate weights on individual synapse genes.
+    for gene in synapse_genes.iter_mut() {
+        if rng.random_bool(params.mutate_edge_weight_prob) {
+            mutate_edge_weight(rng, params, weight_dist, gene);
+        }
+    }
+
+    synapse_genes
+}
 
 pub fn mutate<R: Rng>(rng: &mut R,
+                      params: &MutationParameters,
                       next_inno_index: &mut usize,
                       next_node_index: &mut usize,
-                      mut neuron_genes: Vec<NeuronGene>,
-                      mut synapse_genes: Vec<SynapseGene>,
                       new_innos: &mut HashMap<(usize, usize), usize>,
-                      new_nodes: &mut HashMap<usize, usize>)
+                      new_nodes: &mut HashMap<usize, usize>,
+                      mut neuron_genes: Vec<NeuronGene>,
+                      mut synapse_genes: Vec<SynapseGene>,)
     -> (Vec<NeuronGene>, Vec<SynapseGene>) {
-    let weight_dist = Uniform::new_inclusive(-MUTATION_POWER, MUTATION_POWER)
+    let weight_dist = Uniform::new_inclusive(-params.mutation_power, params.mutation_power)
         .expect("Mutation power should be strictly positive and finite.");
 
     // Mutate weights on individual synapse genes.
     let num_genes = synapse_genes.len() as f64;
     for gene in synapse_genes.iter_mut() {
-        mutate_edge(rng, weight_dist, num_genes, gene);
+        if rng.random_bool(params.mutate_edge_weight_prob) {
+            mutate_edge_weight(rng, params, weight_dist, gene);
+        }
+
+        if gene.enabled {
+            if rng.random_bool(params.mutate_disable_prob / num_genes) {
+                gene.enabled = false;
+            }
+        } else {
+            if rng.random_bool(params.mutate_enable_prob / num_genes) {
+                gene.enabled = true;
+            }
+        }
     }
 
     // Mutate a new edge.
@@ -37,51 +84,40 @@ pub fn mutate<R: Rng>(rng: &mut R,
     // succeed. There are more clever ways to do this if synapse_genes was better organized, but
     // that defeats NEAT's homology requirements, which leaves us stuck with the lazy solution
     // unless an *extra* clever solution is found.
-    if rng.random_bool(MUTATE_NEW_EDGE) {
-        mutate_new_edge(rng, next_inno_index, &mut neuron_genes, &mut synapse_genes, new_innos);
+    if rng.random_bool(params.mutate_new_edge_prob / num_genes) {
+        mutate_new_edge(rng, params, next_inno_index, new_innos, &mut neuron_genes, &mut synapse_genes);
     }
 
     // Mutate a new node.
     // This one is guaranteed to succeed.
-    if rng.random_bool(MUTATE_NEW_NODE) {
-        mutate_new_node(rng, next_inno_index, next_node_index, &mut neuron_genes, &mut synapse_genes, new_innos, new_nodes);
+    if rng.random_bool(params.mutate_new_node_prob) {
+        mutate_new_node(rng, next_inno_index, next_node_index, new_innos, new_nodes, &mut neuron_genes, &mut synapse_genes);
     }
 
     (neuron_genes, synapse_genes)
 }
 
 #[inline]
-fn mutate_edge<R: Rng>(rng: &mut R,
-                       weight_dist: Uniform<f64>,
-                       num_genes: f64,
-                       gene: &mut SynapseGene) {
-    if rng.random_bool(MUTATE_GENE_WEIGHT) {
-        let nudge = weight_dist.sample(rng);
-        if rng.random_bool(MUTATE_RANDOM_WEIGHT) {
-            gene.weight = nudge;
-        } else {
-            gene.weight += nudge;
-            gene.weight = gene.weight.clamp(-CAP_WEIGHT, CAP_WEIGHT);
-        }
-    }
-
-    if gene.enabled {
-        if rng.random_bool(MUTATE_DISABLE_PROB / num_genes) {
-            gene.enabled = false;
-        }
+fn mutate_edge_weight<R: Rng>(rng: &mut R,
+                              params: &MutationParameters,
+                              weight_dist: Uniform<f64>,
+                              gene: &mut SynapseGene) {
+    let nudge = weight_dist.sample(rng);
+    if rng.random_bool(params.mutate_edge_random_weight_prob) {
+        gene.weight = nudge;
     } else {
-        if rng.random_bool(MUTATE_ENABLE_PROB / num_genes) {
-            gene.enabled = true;
-        }
+        gene.weight += nudge;
+        gene.weight = gene.weight.clamp(-params.edge_weight_cap, params.edge_weight_cap);
     }
 }
 
 #[inline]
 fn mutate_new_edge<R: Rng>(rng: &mut R,
+                           params: &MutationParameters,
                            next_inno_index: &mut usize,
-                           neuron_genes: &Vec<NeuronGene>,
-                           synapse_genes: &mut Vec<SynapseGene>,
-                           new_innos: &mut HashMap<(usize, usize), usize>) {
+                           new_innos: &mut HashMap<(usize, usize), usize>,
+                           neuron_genes: &[NeuronGene],
+                           synapse_genes: &mut Vec<SynapseGene>) {
     for _ in 0..20 {
         let src_id: usize = rng.random_range(0..neuron_genes.len());
         let tgt_id: usize = rng.random_range(0..neuron_genes.len());
@@ -92,7 +128,8 @@ fn mutate_new_edge<R: Rng>(rng: &mut R,
         }
         // TODO:
         // If we knew the number of sensory neurons already present, we can guarantee we do not
-        // choose a sensory neuron by tgt_id displacement
+        // choose a sensory neuron by tgt_id displacement. Perhaps worth counting earlier in the
+        // mutation cycle.
 
         let src_id: usize = neuron_genes[src_id].node_name;
         let tgt_id: usize = neuron_genes[tgt_id].node_name;
@@ -111,7 +148,7 @@ fn mutate_new_edge<R: Rng>(rng: &mut R,
                 new_num
             });
 
-        let weight: f64 = rng.random_range(-CAP_NEW_WEIGHT..=CAP_NEW_WEIGHT);
+        let weight: f64 = rng.random_range(-params.edge_new_weight_cap..=params.edge_new_weight_cap);
         let new_synapse: SynapseGene = SynapseGene {
             src_id,
             tgt_id,
@@ -128,12 +165,16 @@ fn mutate_new_edge<R: Rng>(rng: &mut R,
 fn mutate_new_node<R: Rng>(rng: &mut R,
                            next_inno_index: &mut usize,
                            next_node_index: &mut usize,
-                           neuron_genes: &mut Vec<NeuronGene>,
-                           synapse_genes: &mut Vec<SynapseGene>,
                            new_innos: &mut HashMap<(usize, usize), usize>,
-                           new_nodes: &mut HashMap<usize, usize>) {
+                           new_nodes: &mut HashMap<usize, usize>,
+                           neuron_genes: &mut Vec<NeuronGene>,
+                           synapse_genes: &mut Vec<SynapseGene>) {
 
     // Choose enabled gene to split
+    // TODO:
+    // If we knew the number of disabled neurons already present, we can guarantee we do not
+    // choose a disabled neuron by displacement. Perhaps worth counting earlier in the
+    // mutation cycle.
     let target_idx = synapse_genes.iter()
         .enumerate()
         .filter(|(_, gene)| gene.enabled)
