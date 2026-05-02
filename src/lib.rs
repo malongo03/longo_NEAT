@@ -1,12 +1,12 @@
-use pyo3::prelude::*;
 pub mod genome;
-mod population;
-mod network;
-mod simulation;
+pub mod population;
+pub mod network;
+pub mod simulation;
 mod mutation;
+#[cfg(test)]
+mod mock_rng;
 
-/// A Python module implemented in Rust.
-#[pymodule]
-mod longo_snn {
-    use crate::genome::*;
-}
+// #[pymodule]
+// mod longo_snn {
+//     use crate::genome::*;
+// }

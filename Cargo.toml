@@ -10,8 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = "0.28.2"
-rand = "0.10.0"
+rand = "0.10.1"
 test-case = "3.3.1"
+rand_core = "0.10.1"
 
 [dev-dependencies]
 test-case = "3.3.1"
