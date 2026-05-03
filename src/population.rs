@@ -1,10 +1,10 @@
+use crate::genome::{genome_crossover, genome_distance, Genome, NeuronGene, SynapseGene};
+use crate::mutation::{mutate, mutate_no_structure_change, MutationParameters};
+use rand::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
 use std::num::NonZeroUsize;
-use crate::genome::{genome_distance, genome_crossover, Genome, NeuronGene, NeuronType, SynapseGene};
 use std::ops::{Deref, DerefMut};
-use rand::prelude::*;
-use crate::mutation::{mutate, mutate_no_structure_change, MutationParameters};
 
 // TODO: History should probably be refactored to its own module for library purposes.
 // A lot of access functions will probably be created for it.

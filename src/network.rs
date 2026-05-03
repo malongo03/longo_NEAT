@@ -25,7 +25,6 @@ struct RnnEdge {
     weight: f64
 }
 
-
 pub struct RnnNetwork {
     node_state: Vec<f64>,
     new_node_state: Vec<f64>,
@@ -72,8 +71,8 @@ impl RnnNetwork {
             if !edge.enabled {
                 continue;
             }
-            let src_id = name_to_index[&edge.src_id];
-            let tgt_id = name_to_index[&edge.tgt_id];
+            let src_id = name_to_index[&edge.src_name];
+            let tgt_id = name_to_index[&edge.tgt_name];
 
             let rnn_edge = RnnEdge {
                 src_id,
@@ -180,8 +179,8 @@ impl RnnNetwork {
         let mut synapse_genes: Vec<SynapseGene> = Vec::with_capacity(m);
         for (i, edge) in self.edges.iter().enumerate() {
             synapse_genes.push(SynapseGene{
-                src_id: edge.src_id,
-                tgt_id: edge.tgt_id,
+                src_name: edge.src_id,
+                tgt_name: edge.tgt_id,
                 weight: edge.weight,
                 inno_num: i,
                 enabled: true,

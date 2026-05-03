@@ -29,10 +29,10 @@ pub struct NeuronGene {
 /// The gene of a connection between two neurons in a Genome.
 #[derive(Debug, Clone)]
 pub struct SynapseGene {
-    /// Index of neuron sending signal.
-    pub src_id: usize,
-    /// Index of neuron receiving signal.
-    pub tgt_id: usize,
+    /// Name of neuron sending signal.
+    pub src_name: usize,
+    /// Name of neuron receiving signal.
+    pub tgt_name: usize,
     /// Weight multiplier of signal.
     pub weight: f64,
     /// Innovation number of this gene. (See: mutation,
@@ -167,16 +167,16 @@ impl Genome {
             }
             prev_inno = Some(gene.inno_num);
 
-            let edge_pair: (usize, usize) = (gene.src_id, gene.tgt_id);
+            let edge_pair: (usize, usize) = (gene.src_name, gene.tgt_name);
             if !seen_edges.insert(edge_pair) {
                 return Err("Genome contains duplicate edge pair.".into())
             }
-            if !seen_nodes.contains(&gene.src_id) || !seen_nodes.contains(&gene.tgt_id) {
+            if !seen_nodes.contains(&gene.src_name) || !seen_nodes.contains(&gene.tgt_name) {
                 return Err("synapse_genes should not have edges to or from nodes the Genome lacks.".into())
             }
 
-            is_src.insert(gene.src_id);
-            is_tgt.insert(gene.tgt_id);
+            is_src.insert(gene.src_name);
+            is_tgt.insert(gene.tgt_name);
         }
 
         let mut has_sensory: bool = false;
@@ -314,7 +314,7 @@ pub fn genome_crossover(genome1: &Genome,
 
     // Genome with the highest fitness is considered dominant. If neither has a higher fitness,
     // we consider both Genomes dominant.
-    let (dom_neur, dom_syna, dom_species, rec_neur, rec_syna, both_dom) =
+    let (dom_neur, dom_syna, dom_species, _rec_neur, rec_syna, both_dom) =
         if fitness1 > fitness2 {
             (genome1.neuron_genes(),
              genome1.synapse_genes(),
@@ -461,8 +461,8 @@ mod genome_tests {
 
     fn helper_mock_synapse(inno_num: usize, weight: f64) -> SynapseGene {
         SynapseGene{
-            src_id: 0,
-            tgt_id: 1,
+            src_name: 0,
+            tgt_name: 1,
             weight,
             inno_num,
             enabled: true,
@@ -480,8 +480,8 @@ mod genome_tests {
             NeuronGene{node_name: 2, neuron_type: NeuronType::Muscular(0)}
         ];
         let synapses = vec![
-            SynapseGene{ src_id:0, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true},
-            SynapseGene{ src_id:1, tgt_id: 2, weight: 1.0, inno_num: 1, enabled: true},
+            SynapseGene{ src_name:0, tgt_name: 1, weight: 1.0, inno_num: 0, enabled: true},
+            SynapseGene{ src_name:1, tgt_name: 2, weight: 1.0, inno_num: 1, enabled: true},
         ];
 
         (neurons, synapses)
@@ -533,8 +533,8 @@ mod genome_tests {
     #[test]
     fn test_invalid_duplicate_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s[1].src_id = 0;
-        s[1].tgt_id = 1;
+        s[1].src_name = 0;
+        s[1].tgt_name = 1;
         assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome:new should return an error if there is a duplicate edge");
     }
@@ -542,7 +542,7 @@ mod genome_tests {
     #[test]
     fn test_invalid_missing_node_reference() {
         let (n, mut s) = helper_mock_valid_network();
-        s[0].tgt_id = 99;
+        s[0].tgt_name = 99;
         assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome:new should return an error if node is referenced in synapse_genes that is \
                 missing in node_genes");
@@ -551,7 +551,7 @@ mod genome_tests {
     #[test]
     fn test_invalid_sensory_with_input_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s.push(SynapseGene { src_id: 2, tgt_id: 0, weight: 1.0, inno_num: 2, enabled: true });
+        s.push(SynapseGene { src_name: 2, tgt_name: 0, weight: 1.0, inno_num: 2, enabled: true });
         assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if a Sensory neuron has an input edge");
     }
@@ -575,7 +575,7 @@ mod genome_tests {
     #[test]
     fn test_invalid_muscular_missing_input_edge() {
         let (n, mut s) = helper_mock_valid_network();
-        s[1].tgt_id = 1;
+        s[1].tgt_name = 1;
         assert!(Genome::new(5, 5, n, s).is_err(),
                 "Genome::new should return an error if a muscular neuron has no input edge");
     }
@@ -587,8 +587,8 @@ mod genome_tests {
             NeuronGene { node_name: 2, neuron_type: NeuronType::Muscular(0) },
         ];
         let no_sensory_s = vec![
-            SynapseGene { src_id: 1, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true },
-            SynapseGene { src_id: 1, tgt_id: 2, weight: 1.0, inno_num: 1, enabled: true },
+            SynapseGene { src_name: 1, tgt_name: 1, weight: 1.0, inno_num: 0, enabled: true },
+            SynapseGene { src_name: 1, tgt_name: 2, weight: 1.0, inno_num: 1, enabled: true },
         ];
         assert!(Genome::new(5, 5, no_sensory_n, no_sensory_s).is_err(),
                 "Genome::new should return an error if there is no Sensory neuron in neuron_genes");
@@ -601,8 +601,8 @@ mod genome_tests {
             NeuronGene { node_name: 1, neuron_type: NeuronType::Inter() },
         ];
         let no_muscular_s = vec![
-            SynapseGene { src_id: 0, tgt_id: 1, weight: 1.0, inno_num: 0, enabled: true },
-            SynapseGene { src_id: 1, tgt_id: 1, weight: 1.0, inno_num: 1, enabled: true },
+            SynapseGene { src_name: 0, tgt_name: 1, weight: 1.0, inno_num: 0, enabled: true },
+            SynapseGene { src_name: 1, tgt_name: 1, weight: 1.0, inno_num: 1, enabled: true },
         ];
         assert!(Genome::new(5, 5, no_muscular_n, no_muscular_s).is_err(),
                 "Genome::new should return an error if there is no Muscular neuron in neuron_genes");
@@ -677,29 +677,29 @@ mod genome_tests {
 
         let synapse_genes: Vec<SynapseGene> = vec![
             SynapseGene{
-                src_id: 0,
-                tgt_id: 1,
+                src_name: 0,
+                tgt_name: 1,
                 weight: 10.0,
                 inno_num: 0,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 0,
-                tgt_id: 3,
+                src_name: 0,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 6,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 3,
-                tgt_id: 1,
+                src_name: 3,
+                tgt_name: 1,
                 weight: 5.0,
                 inno_num: 7,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 1,
-                tgt_id: 3,
+                src_name: 1,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 10,
                 enabled: true,
@@ -723,43 +723,43 @@ mod genome_tests {
 
         let synapse_genes: Vec<SynapseGene> = vec![
             SynapseGene{
-                src_id: 0,
-                tgt_id: 1,
+                src_name: 0,
+                tgt_name: 1,
                 weight: 20.0,
                 inno_num: 0,
                 enabled: false,
             },
             SynapseGene{
-                src_id: 0,
-                tgt_id: 3,
+                src_name: 0,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 6,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 3,
-                tgt_id: 1,
+                src_name: 3,
+                tgt_name: 1,
                 weight: 5.0,
                 inno_num: 7,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 1,
-                tgt_id: 3,
+                src_name: 1,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 10,
                 enabled: false,
             },
             SynapseGene{
-                src_id: 1,
-                tgt_id: 4,
+                src_name: 1,
+                tgt_name: 4,
                 weight: 5.0,
                 inno_num: 11,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 4,
-                tgt_id: 3,
+                src_name: 4,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 12,
                 enabled: true,
@@ -783,43 +783,43 @@ mod genome_tests {
 
         let synapse_genes: Vec<SynapseGene> = vec![
             SynapseGene{
-                src_id: 0,
-                tgt_id: 1,
+                src_name: 0,
+                tgt_name: 1,
                 weight: 5.0,
                 inno_num: 0,
                 enabled: false,
             },
             SynapseGene {
-                src_id: 0,
-                tgt_id: 2,
+                src_name: 0,
+                tgt_name: 2,
                 weight: 5.0,
                 inno_num: 2,
                 enabled: true,
             },
             SynapseGene {
-                src_id: 2,
-                tgt_id: 1,
+                src_name: 2,
+                tgt_name: 1,
                 weight: 5.0,
                 inno_num: 3,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 0,
-                tgt_id: 3,
+                src_name: 0,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 6,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 3,
-                tgt_id: 1,
+                src_name: 3,
+                tgt_name: 1,
                 weight: 5.0,
                 inno_num: 7,
                 enabled: true,
             },
             SynapseGene{
-                src_id: 1,
-                tgt_id: 3,
+                src_name: 1,
+                tgt_name: 3,
                 weight: 5.0,
                 inno_num: 10,
                 enabled: true,
@@ -924,7 +924,6 @@ mod genome_tests {
         let mut genome2 = helper_base_genome(1);
 
         let iterations = 10_000;
-        let tolerance= 0.02;
 
         let expected_disabled_prob = 0.75;
 
