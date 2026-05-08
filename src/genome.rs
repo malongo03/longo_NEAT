@@ -22,23 +22,46 @@ pub enum NeuronType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeuronGene {
     // Global name of this node (used for cross-over homology)
-    pub node_name: usize,
-    pub neuron_type: NeuronType
+    node_name: usize,
+    neuron_type: NeuronType
+}
+impl NeuronGene {
+    pub fn new(node_name: usize, neuron_type: NeuronType) -> NeuronGene {
+        Self{node_name, neuron_type}
+    }
+    
+    pub fn node_name(&self) -> usize {self.node_name}
+    
+    pub fn neuron_type(&self) -> NeuronType {self.neuron_type}
 }
 
 // The gene for a connection between two neurons.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynapseGene {
     // Name of neuron gene sending the signal.
-    pub src_name: usize,
+    src_name: usize,
     // Name of neuron gene receiving the signal.
-    pub tgt_name: usize,
+    tgt_name: usize,
     // Weight multiplier of signal.
     pub weight: f64,
     // Innovation number of this gene. (See: mutation,
-    pub inno_num: usize,
+    inno_num: usize,
     // If this edge appears in the phenotype.
     pub enabled: bool
+}
+impl SynapseGene {
+    pub fn new(src_name: usize, tgt_name: usize, weight: f64, inno_num: usize, enabled: bool) -> Self {
+        Self{src_name, tgt_name, weight, inno_num, enabled}
+    }
+    
+    #[inline]
+    pub fn src_name(&self) -> usize {self.src_name}
+
+    #[inline]
+    pub fn tgt_name(&self) -> usize {self.tgt_name}
+
+    #[inline]
+    pub fn inno_num(&self) -> usize {self.inno_num}
 }
 
 // A description of a neural network that can be used for NEAT evolution.

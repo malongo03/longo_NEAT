@@ -1,3 +1,6 @@
+#![allow(unused)]
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::mem::swap;
@@ -54,8 +57,8 @@ impl RnnNetwork {
         let mut input_mapping: Vec<(usize, usize)> = Vec::new();
         let mut output_mapping: Vec<(usize, usize)> = Vec::new();
         for (node_id, node) in genome.neuron_genes().iter().enumerate() {
-            name_to_index.insert(node.node_name, node_id);
-            match node.neuron_type {
+            name_to_index.insert(node.node_name(), node_id);
+            match node.neuron_type() {
                 NeuronType::Sensory(input_id) => {
                     input_mapping.push((input_id, node_id));
                 }
@@ -71,8 +74,8 @@ impl RnnNetwork {
             if !edge.enabled {
                 continue;
             }
-            let src_id = name_to_index[&edge.src_name];
-            let tgt_id = name_to_index[&edge.tgt_name];
+            let src_id = name_to_index[&edge.src_name()];
+            let tgt_id = name_to_index[&edge.tgt_name()];
 
             let rnn_edge = RnnEdge {
                 src_id,
@@ -102,7 +105,9 @@ impl RnnNetwork {
         for node in self.node_state.iter_mut() {
             *node = (self.activation_function)(*node);
         }
-        // Push outputs (we do this first because the end of this loop does not compute activation functions
+        // Push outputs
+        // Technically, putting this here causes a one tick delay in outputs, but it prevents
+        // having to run the activation functions twice.
         for (output_id, node_id) in self.output_mapping.iter() {
             outputs[*output_id] += self.node_state[*node_id];
         }
@@ -121,8 +126,8 @@ impl RnnNetwork {
         self.edges.push(RnnEdge{src_id, tgt_id, weight});
     }
 
-    /// Note! This function has no Genome safety checks. A Network modified by it has no guarantee
-    /// that it produces a valid Genome!
+    // Note! This function has no Genome safety checks. A Network modified by it has no guarantee
+    // that it produces a valid Genome!
     fn add_or_replace_edge(&mut self, src_id: usize, tgt_id: usize, weight: f64) {
         for edge in self.edges.iter_mut() {
             if edge.src_id == src_id && edge.tgt_id == tgt_id {
@@ -133,8 +138,8 @@ impl RnnNetwork {
         self.edges.push(RnnEdge{src_id, tgt_id, weight});
     }
 
-    /// Note! This function has no Genome safety checks. A Network modified by it has no guarantee
-    /// that it produces a valid Genome!
+    // Note! This function has no Genome safety checks. A Network modified by it has no guarantee
+    // that it produces a valid Genome!
     fn add_node(&mut self, input_id: Option<usize>, output_id: Option<usize>) {
         let node_id = self.node_state.len();
         self.node_state.push(0.0);
@@ -153,16 +158,16 @@ impl RnnNetwork {
 
         let mut neuron_genes: Vec<NeuronGene> = Vec::with_capacity(n);
         for i in 0..n {
-            neuron_genes.push(NeuronGene{node_name: i, neuron_type: NeuronType::Inter()})
+            neuron_genes.push(NeuronGene::new(i, NeuronType::Inter()))
         }
         for (input_id, node_id) in self.input_mapping.iter() {
-            if let NeuronType::Sensory(_) = neuron_genes[*node_id].neuron_type {
+            if let NeuronType::Sensory(_) = neuron_genes[*node_id].neuron_type() {
                 return Err("Genomes should not have Sensory neurons with multiple input ids".into())
             }
-            neuron_genes[*node_id].neuron_type = NeuronType::Sensory(*input_id);
+            neuron_genes[*node_id] = NeuronGene::new(*node_id, NeuronType::Sensory(*input_id));
         }
         for (output_id, node_id) in self.output_mapping.iter() {
-            match neuron_genes[*node_id].neuron_type {
+            match neuron_genes[*node_id].neuron_type() {
                 NeuronType::Muscular(_) => {
                     return Err("Genomes should not have Muscular neurons with multiple output ids".into())
                 }
@@ -170,7 +175,7 @@ impl RnnNetwork {
                     return Err("Genome neurons should not be both Sensory and Muscular".into())
                 }
                 NeuronType::Inter() => {
-                    neuron_genes[*node_id].neuron_type = NeuronType::Muscular(*output_id);
+                    neuron_genes[*node_id] = NeuronGene::new(*node_id, NeuronType::Sensory(*output_id));
                 }
             }
         }
@@ -178,13 +183,13 @@ impl RnnNetwork {
         let m: usize = self.edges.len();
         let mut synapse_genes: Vec<SynapseGene> = Vec::with_capacity(m);
         for (i, edge) in self.edges.iter().enumerate() {
-            synapse_genes.push(SynapseGene{
-                src_name: edge.src_id,
-                tgt_name: edge.tgt_id,
-                weight: edge.weight,
-                inno_num: i,
-                enabled: true,
-            })
+            synapse_genes.push(SynapseGene::new(
+                edge.src_id,
+                edge.tgt_id,
+                edge.weight,
+                i,
+                true,
+            ))
         }
 
         Genome::new(0, 0, neuron_genes, synapse_genes)

@@ -119,7 +119,7 @@ impl rand_core::TryRng for MockRng {
 }
 
 #[cfg(test)]
-mod test_mock_rng {
+mod tests {
     use rand::distr::Uniform;
     use super::*;
     use test_case::test_case;
@@ -136,14 +136,15 @@ mod test_mock_rng {
     #[test_case(0x192D2110 ; "0x192D2110")]
     #[test_case(0x90DF3816 ; "0x90DF3816")]
     #[test_case(0x80F0C19C ; "0x80F0C19C")]
-    fn test_push_u64(n: u64) {
+    fn push_u64(n: u64) {
         let mut mock_rng = MockRng::new();
         mock_rng.push_u64(n);
-        assert_eq!(mock_rng.next_u64(), n)
+        assert_eq!(mock_rng.next_u64(), n,
+                   "MockRng::push_u64 should queue the u64 pushed in.");
     }
 
     #[test]
-    fn test_repeated_u64() {
+    fn repeated_u64() {
         let mut mock_rng = MockRng::new();
         let u64_vec: Vec<u64> = vec![0xF5963A44, 0xA59AFCEE, 0xD2FCB41C, 0x0A46DC65, 0xDB663CE1,
                                      0xA1FD63CF, 0x51EB2E90, 0x192D2110, 0x90DF3816, 0x80F0C19C];
@@ -153,21 +154,29 @@ mod test_mock_rng {
         }
 
         for &n in u64_vec.iter() {
-            assert_eq!(mock_rng.next_u64(), n)
+            assert_eq!(mock_rng.next_u64(), n,
+                       "MockRng::push_u64 should queue the u64 pushed in.")
         }
     }
 
     #[test]
-    fn test_push_bool() {
+    fn push_bool_true() {
         let mut mock_rng = MockRng::new();
         mock_rng.push_bool(true);
-        assert!(mock_rng.random_bool(0.0001));
-        mock_rng.push_bool(false);
-        assert!(!mock_rng.random_bool(0.9999));
+        assert!(mock_rng.random_bool(0.0001),
+                "A MockRng::push_bool(true) should queue an always true random_bool call");
     }
 
     #[test]
-    fn test_repeated_push_bool() {
+    fn push_bool_false() {
+        let mut mock_rng = MockRng::new();
+        mock_rng.push_bool(false);
+        assert!(!mock_rng.random_bool(0.9999),
+                "MockRng::push_bool(false) should queue an always false random_bool call");
+    }
+
+    #[test]
+    fn repeated_push_bool() {
         let mut mock_rng = MockRng::new();
         let bool_vec: Vec<bool> = vec![true, false, false, false, true, true, true, false, true, true];
 
@@ -177,10 +186,12 @@ mod test_mock_rng {
 
         for &b in bool_vec.iter() {
             if b {
-                assert!(mock_rng.random_bool(0.0001));
+                assert!(mock_rng.random_bool(0.0001),
+                        "A MockRng::push_bool(true) call should queue an always true random_bool call");
             }
             else {
-                assert!(!mock_rng.random_bool(0.9999));
+                assert!(!mock_rng.random_bool(0.9999),
+                        "A MockRng::push_bool(false) call should queue an always false random_bool call");
             }
         }
     }
@@ -192,14 +203,15 @@ mod test_mock_rng {
     #[test_case(76, 96; "76 96")]
     #[test_case( 2,  5;   "2 5")]
     #[test_case(14647823, 63528435; "14647823 63528435")]
-    fn test_push_index(t: usize, r: usize) {
+    fn push_index(t: usize, r: usize) {
         let mut mock_rng = MockRng::new();
         mock_rng.push_index(t, r);
-        assert_eq!(mock_rng.random_range(0..r), t)
+        assert_eq!(mock_rng.random_range(0..r), t,
+                   "MockRng::push_index should queue the index out of range pushed in.");
     }
 
     #[test]
-    fn test_repeated_push_index() {
+    fn repeated_push_index() {
         let mut mock_rng = MockRng::new();
         let range_vec: Vec<(usize, usize)> = vec![(0, 76), (85, 86), (36, 66), (21, 55), (76, 96),
                                                   (2, 5), (14647823, 63528435)];
@@ -209,7 +221,8 @@ mod test_mock_rng {
         }
 
         for &(t, r) in range_vec.iter() {
-           assert_eq!(mock_rng.random_range(0..r), t)
+           assert_eq!(mock_rng.random_range(0..r), t,
+                      "MockRng::push_index should queue the index out of range pushed in.")
         }
     }
 
@@ -221,17 +234,19 @@ mod test_mock_rng {
     #[test_case(42.4242, 40.0, 50.0 ; "arbitrary positive floats")]
     #[test_case(0.00015, 0.0001, 0.0002 ; "microscopic range")]
     #[test_case(1_000_000.5, 0.0, 2_000_000.0 ; "massive bounds")]
-    fn test_push_range_float(expected: f64, lower: f64, upper: f64) {
+    fn push_range_float(expected: f64, lower: f64, upper: f64) {
         let mut mock_rng = MockRng::new();
 
         let actual_mocked_val = mock_rng.push_range_float(expected, lower, upper);
-        assert_eq!(mock_rng.random_range(lower..upper), actual_mocked_val);
+        assert_eq!(mock_rng.random_range(lower..upper), actual_mocked_val,
+                   "MockRng::push_range_float should queue the f64 out of lower..<upper");
         let actual_mocked_val = mock_rng.push_range_float(expected, lower, upper);
-        assert_eq!(mock_rng.random_range(lower..=upper), actual_mocked_val);
+        assert_eq!(mock_rng.random_range(lower..=upper), actual_mocked_val,
+                   "MockRng::push_range_float should equally queue the f64 out of lower..=upper");
     }
 
     #[test]
-    fn test_repeated_push_float() {
+    fn repeated_push_float() {
         let mut mock_rng = MockRng::new();
 
         let float_vec: Vec<(f64, f64, f64)> = vec![
@@ -248,7 +263,8 @@ mod test_mock_rng {
         }
 
         for (i, (_, lower, upper)) in float_vec.iter().copied().enumerate() {
-            assert!((mock_rng.random_range(lower..upper) - actual_targets[i]).abs() <= f64::EPSILON);
+            assert_eq!(mock_rng.random_range(lower..upper), actual_targets[i],
+                       "MockRng::push_range_float should queue the f64 out of lower..<upper");
         }
 
         actual_targets.clear();
@@ -257,7 +273,8 @@ mod test_mock_rng {
         }
 
         for (i, (_, lower, upper)) in float_vec.iter().copied().enumerate() {
-            assert!((mock_rng.random_range(lower..=upper) - actual_targets[i]).abs() <= f64::EPSILON);
+            assert_eq!(mock_rng.random_range(lower..=upper), actual_targets[i],
+                       "MockRng::push_range_float should equally queue the f64 out of lower..=upper");
         }
     }
 
@@ -267,12 +284,14 @@ mod test_mock_rng {
     #[test_case(-2.0, -10.0, -2.0 ; "exact negative upper bound inclusive")]
     #[test_case(5.5, -5.5, 5.5 ; "exact crossing upper bound inclusive")]
     #[test_case(42.4242, 40.0, 50.0 ; "arbitrary positive floats inclusive")]
-    fn test_push_float_inclusive(expected: f64, lower: f64, upper: f64) {
+    fn push_float_inclusive(expected: f64, lower: f64, upper: f64) {
         let mut mock_rng = MockRng::new();
 
         let actual_mocked_val = mock_rng.push_uniform_float_inclusive(expected, lower, upper);
         let uniform = Uniform::new_inclusive(lower, upper).unwrap();
 
-        assert_eq!(mock_rng.sample(uniform), actual_mocked_val);
+        assert_eq!(mock_rng.sample(uniform), actual_mocked_val,
+                   "MockRng::push_uniform_float_inclusive should queue the f64 out of \
+                   a Uniform::new_inclusive(lower, upper)");
     }
 }

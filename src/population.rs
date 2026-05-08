@@ -5,36 +5,10 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut};
-
-// TODO: History should probably be refactored to its own module for library purposes.
-// A lot of access functions will probably be created for it.
-
-struct SpeciesHistory {
-    id: usize,
-    birth_gen: usize,
-    origin_species: Option<usize>,
-    extinct_gen: Option<usize>,
-    max_fitness: Vec<f64>,
-
-    /// Of the following format:
-    /// history_index_by_gen
-    history_index_by_generation: Vec<usize>,
-}
-impl SpeciesHistory {
-    fn new(id: usize, birth_gen: usize, origin_species: Option<usize>) -> Self {
-        Self {
-            id,
-            birth_gen,
-            origin_species,
-            extinct_gen: None,
-            max_fitness: vec![],
-            history_index_by_generation: vec![],
-        }
-    }
-}
+use crate::history::{History, SpeciesHistory};
 
 #[derive(Debug, Clone)]
-struct Generation(Vec<Genome>);
+pub struct Generation(Vec<Genome>);
 impl Deref for Generation {
     type Target = Vec<Genome>;
     fn deref(&self) -> &Self::Target {
@@ -44,23 +18,6 @@ impl Deref for Generation {
 impl DerefMut for Generation {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-pub struct History {
-    reprs: Vec<Generation>,
-    bests: Vec<Generation>,
-    max_fitness: Vec<f64>,
-    species: Vec<SpeciesHistory>,
-}
-impl History {
-    fn new_blank() -> Self {
-        Self {
-            reprs: vec![],
-            bests: vec![],
-            max_fitness: vec![],
-            species: vec![],
-        }
     }
 }
 
@@ -80,30 +37,27 @@ struct ActiveSpecies {
     species_history_id: usize,
     member_indices: Vec<usize>,
 
-    last_improvement_counter: usize,
-    last_improvement_fitness: f64,
+    gens_since_best_fitness: usize, // Generations from last improvement. Default is 0.
+    best_fitness: f64, // Last significant best fitness
 }
 impl ActiveSpecies {
     fn new(species_history_id: usize) -> Self {
         Self {
             species_history_id,
             member_indices: Vec::new(),
-            last_improvement_counter: 0,
-            last_improvement_fitness: f64::NEG_INFINITY,
+            gens_since_best_fitness: 0,
+            best_fitness: f64::NEG_INFINITY,
         }
     }
 }
 
-/// # Interface Contract
-///
-///
 pub struct Population {
     population_size: NonZeroUsize,
     species_threshold: f64,
     mutation_parameters: MutationParameters,
 
     active_species: Vec<ActiveSpecies>,
-    population: Generation,
+    curr_gen: Generation,
     fitness: Vec<Option<f64>>,
 
     next_inno_index: usize,
@@ -111,17 +65,19 @@ pub struct Population {
     next_species_id: usize,
     generation_index: usize,
 
-    last_improvement_counter: usize,
-    last_improvement_fitness: f64,
+    stagnations_since_best_fitness: usize,
+    gens_since_best_fitness: usize, // Generations from last improvement. Default is 0.
+    best_fitness: f64, // Best fitness so far
     history: History
 }
 impl Population {
 
     // TODO: Better error handling with a proper error type
     // TODO: Some of this functionality can definitely be merged with next_generation
-    pub fn new_from_base(population_size: NonZeroUsize,
-               species_threshold: f64,
-               starting_genome: Genome)
+    pub fn new_from_base<R: Rng>(rng: &mut R,
+                                 population_size: NonZeroUsize,
+                                 species_threshold: f64,
+                                 starting_genome: Genome)
         -> Result<Self, Box<dyn Error>> {
 
         if species_threshold <= 0.0 {
@@ -133,19 +89,18 @@ impl Population {
 
         let fitness: Vec<Option<f64>> = vec![None; population_size.get()];
 
-        let next_inno_index: Option<usize> = starting_genome.synapse_genes().iter().map(|gene| gene.inno_num).max();
-        let next_inno_index: usize = if let Some(inno_index) = next_inno_index {inno_index + 1} else {0};
-        let next_node_index: Option<usize> = starting_genome.neuron_genes().iter().map(|gene| gene.node_name).max();
-        let next_node_index: usize = if let Some(node_index) = next_node_index {node_index + 1} else {0};
+        let next_inno_index: Option<&SynapseGene> = starting_genome.synapse_genes().last();
+        let next_inno_index: usize = if let Some(gene) = next_inno_index {gene.inno_num() + 1} else {0};
+        let next_node_index: Option<&NeuronGene> = starting_genome.neuron_genes().last();
+        let next_node_index: usize = if let Some(gene) = next_node_index {gene.node_name() + 1} else {0};
         let mut next_species_id: usize = 1;
         let generation_index: usize = 0;
 
-        let last_improvement_counter = 0;
-        let last_improvement_fitness: f64 = f64::NEG_INFINITY;
+        let stagnations_since_best_fitness: usize = 0;
+        let gens_since_best_fitness = 0;
+        let best_fitness: f64 = f64::NEG_INFINITY;
 
         // Populating population //
-
-        let mut rng = rand::rng();
 
         let mut active_species: Vec<ActiveSpecies> = vec![ActiveSpecies::new(0)];
         let mut population: Generation = Generation(Vec::with_capacity(population_size.get()));
@@ -165,7 +120,7 @@ impl Population {
         active_species[0].member_indices.push(0);
 
         for id in 1..population_size.get() {
-            let mutated_synapses = mutate_no_structure_change(&mut rng, &mutation_parameters, starting_genome.synapse_genes().clone());
+            let mutated_synapses = mutate_no_structure_change(rng, &mutation_parameters, starting_genome.synapse_genes().clone());
 
             let species_index: Option<usize> = anchors
                 .iter()
@@ -210,7 +165,7 @@ impl Population {
             mutation_parameters,
 
             active_species,
-            population,
+            curr_gen: population,
             fitness,
 
             next_inno_index,
@@ -218,8 +173,10 @@ impl Population {
             next_species_id,
             generation_index,
 
-            last_improvement_counter,
-            last_improvement_fitness,
+            stagnations_since_best_fitness,
+            gens_since_best_fitness,
+            best_fitness,
+
             history,
         })
     }
@@ -241,8 +198,13 @@ impl Population {
         Ok(())
     }
 
-    pub fn new_generation(&mut self) {
-        let mut rng = rand::rng();
+    fn replace_fitness_vector_unchecked(&mut self, new_fitness_vector: &[f64]) {
+        for (idx, &fitness) in new_fitness_vector.iter().enumerate() {
+            self.fitness[idx] = Some(fitness);
+        }
+    }
+
+    pub fn new_generation<R: Rng>(&mut self, rng: &mut R) {
 
         self.generation_index += 1;
 
@@ -250,7 +212,7 @@ impl Population {
         let (best_fitness_per_species,
             average_fitness_per_species,
             champions,
-            anchors) = self.calculate_species_fitness_and_cull(&mut rng);
+            anchors) = self.calculate_species_fitness_and_cull(rng);
 
         // 2. Check which species are stagnating
         let stagnating_species: Vec<bool> = self.check_for_stagnation(best_fitness_per_species);
@@ -259,13 +221,13 @@ impl Population {
         let allotted_children = Population::allot_children(self.population_size.get(), average_fitness_per_species, stagnating_species);
 
         // 4. Produce new generation, sorted into proper species
-        let (new_indices, new_generation) = self.reproduce(&mut rng, champions, anchors, allotted_children);
+        let (new_indices, new_generation) = self.reproduce(rng, champions, anchors, allotted_children);
 
         // 5. Perform extinctions
         let new_active_species = self.perform_extinctions(new_indices);
 
         // 6. Move everything
-        self.population = new_generation;
+        self.curr_gen = new_generation;
         self.active_species = new_active_species;
         for fitness in self.fitness.iter_mut() {
             *fitness = None;
@@ -301,24 +263,19 @@ impl Population {
             });
             let champion_index: usize = active_species.member_indices[0];
             let champion_fitness: f64 = self.fitness[champion_index].expect("Already sanitized");
-            champions.push(self.population[champion_index].clone());
+            champions.push(self.curr_gen[champion_index].clone());
             best_fitness_per_species.push(champion_fitness);
 
             // 2
             let repr_index: usize = *active_species.member_indices.choose(rng).expect(
                 "An empty active species should have been made extinct and filtered out."
             );
-            anchors.push(self.population[repr_index].clone());
+            anchors.push(self.curr_gen[repr_index].clone());
 
             // 3
-            let mut species_fitness = 0.0;
+            let species_fitness: f64 = active_species.member_indices.iter().map(|idx| {self.fitness[*idx].expect("Already sanitized.")}).sum();
             let species_pop: f64 = active_species.member_indices.len() as f64;
-            for &genome_index in active_species.member_indices.iter() {
-                let fitness = self.fitness[genome_index].expect("Already sanitized");
-                let adj_fitness = fitness / species_pop;
-                species_fitness += adj_fitness;
-            }
-            average_fitness_per_species.push(species_fitness);
+            average_fitness_per_species.push(species_fitness / species_pop);
 
             // 4
             let survival_count = active_species.member_indices.len() - (EVOLUTION_TRUNCATION * species_pop).floor() as usize;
@@ -341,21 +298,22 @@ impl Population {
         -> Vec<bool> {
         let num_active_species = self.active_species.len();
 
-        let mut stagnating: Vec<bool> = vec![false; num_active_species];
+        let mut stagnating_species: Vec<bool> = vec![false; num_active_species];
         if num_active_species == 1 { // No population or species stagnation can occur during zero diversity
 
             let top1_score: f64 = best_fitness_per_species[0];
 
             self.history.max_fitness.push(top1_score);
 
-            self.last_improvement_counter = 0;
-            self.last_improvement_fitness = top1_score;
+            self.stagnations_since_best_fitness = 0;
+            self.gens_since_best_fitness = 0;
+            self.best_fitness = top1_score;
 
             let active_species = &mut self.active_species[0];
 
-            active_species.last_improvement_counter = 0;
-            active_species.last_improvement_fitness = top1_score;
-            return stagnating
+            active_species.gens_since_best_fitness = 0;
+            active_species.best_fitness = top1_score;
+            return stagnating_species
         }
 
         // 1.) Find top two scoring species
@@ -382,17 +340,19 @@ impl Population {
         self.history.max_fitness.push(top1_score);
 
         // 2.) Check if the entire population is stagnating. If so, all but the top two species
-        // will be alloted zero children.
+        // will be allotted zero children.
         let population_stagnation: bool = {
-            self.last_improvement_counter += 1;
-            if top1_score - self.last_improvement_fitness > EVOLUTION_STAGNATION_EPSILON {
-                self.last_improvement_counter = 0;
-                self.last_improvement_fitness = top1_score;
+            self.gens_since_best_fitness += 1;
+            if top1_score - self.best_fitness > EVOLUTION_STAGNATION_EPSILON {
+                self.stagnations_since_best_fitness += 1;
+                self.gens_since_best_fitness = 0;
+                self.best_fitness = top1_score;
                 false
             }
-            else if self.last_improvement_counter >= 20 {
-                self.last_improvement_counter = 0;
-                self.last_improvement_fitness = top1_score;
+            else if self.gens_since_best_fitness >= 20 {
+                self.stagnations_since_best_fitness += 1;
+                self.gens_since_best_fitness = 0;
+                self.best_fitness = top1_score;
                 true
             }
             else {
@@ -400,7 +360,7 @@ impl Population {
             }
         };
         if population_stagnation {
-            for (index, stagnation) in stagnating.iter_mut().enumerate() {
+            for (index, stagnation) in stagnating_species.iter_mut().enumerate() {
                 // Elitism
                 if index != top1_index && index != top2_index {
                     *stagnation = true;
@@ -413,22 +373,22 @@ impl Population {
         // guaranteed to go extinct.)
         for (active_index, active_species) in self.active_species.iter_mut().enumerate() {
             let fitness = best_fitness_per_species[active_index];
-            active_species.last_improvement_counter += 1;
-            if fitness - active_species.last_improvement_fitness > EVOLUTION_STAGNATION_EPSILON {
-                active_species.last_improvement_counter = 0;
-                active_species.last_improvement_fitness = fitness;
+            active_species.gens_since_best_fitness += 1;
+            if fitness - active_species.best_fitness > EVOLUTION_STAGNATION_EPSILON {
+                active_species.gens_since_best_fitness = 0;
+                active_species.best_fitness = fitness;
                 continue;
             }
             // Elitism protection. Top two species can never stagnate.
             if active_index == top1_index || active_index == top2_index {
                 continue;
             }
-            if active_species.last_improvement_counter >= 15 {
-                stagnating[active_index] = true;
+            if active_species.gens_since_best_fitness >= 15 {
+                stagnating_species[active_index] = true;
             }
         }
 
-        stagnating
+        stagnating_species
     }
 
     fn allot_children(population_size: usize,
@@ -539,13 +499,13 @@ impl Population {
         -> (Vec<NeuronGene>, Vec<SynapseGene>, usize) {
         let parent1_index = *self.active_species[active_index].member_indices
             .choose(&mut rng).expect("Pop indices should always be non-empty");
-        let parent1: &Genome = &self.population[parent1_index];
+        let parent1: &Genome = &self.curr_gen[parent1_index];
         let fitness1: f64 = self.fitness[parent1_index].expect(
             "The fitness vector should already have been sanitized."
         );
 
         if rng.random_bool(EVOLUTION_NO_CROSSOVER) {
-            let genome = &self.population[parent1_index];
+            let genome = &self.curr_gen[parent1_index];
             (genome.neuron_genes().clone(), genome.synapse_genes().clone(), genome.species_history_id())
         }
 
@@ -560,7 +520,7 @@ impl Population {
                 };
             let parent2_index = *self.active_species[species_index].member_indices
                 .choose(&mut rng).expect("Pop indices will always be non-empty");
-            let parent2: &Genome = &self.population[parent2_index];
+            let parent2: &Genome = &self.curr_gen[parent2_index];
             let fitness2: f64 = self.fitness[parent2_index].expect(
                 "The fitness vector should already have been sanitized."
             );
@@ -578,7 +538,7 @@ impl Population {
                     if parent1_index == parent2_index {
                         continue;
                     }
-                    let parent2: &Genome = &self.population[parent2_index];
+                    let parent2: &Genome = &self.curr_gen[parent2_index];
                     let fitness2: f64 = self.fitness[parent2_index].expect(
                         "The fitness vector should already have been sanitized."
                     );
@@ -659,158 +619,11 @@ impl Population {
             new_active_species.push(ActiveSpecies {
                 species_history_id: old_species.species_history_id,
                 member_indices,
-                last_improvement_counter: old_species.last_improvement_counter,
-                last_improvement_fitness: old_species.last_improvement_fitness,
+                gens_since_best_fitness: old_species.gens_since_best_fitness,
+                best_fitness: old_species.best_fitness,
             });
         }
         new_active_species
     }
-
-}
-
-#[cfg(test)]
-mod population_test {
-    use super::*;
-    use test_case::test_case;
-
-    //////////////////////////
-    // NEW POPULATION TESTS //
-    //////////////////////////
-
-    #[test]
-    fn test_new_pop(){todo!()}
-
-    //////////////////////////
-    // INSERT_FITNESS TESTS //
-    //////////////////////////
-    #[test]
-    fn test_fitness_nan() {todo!()}
-
-    #[test]
-    fn test_fitness_infinity() {todo!()}
-
-    #[test]
-    fn test_fitness_out_of_bounds() {todo!()}
-
-    #[test]
-    fn test_fitness_just_within_bounds() {todo!()}
-
-    #[test]
-    fn test_fitness_valid() {todo!()}
-
-    //////////////////////////////////////////////
-    // CALCULATE_SPECIES_FITNESS_AND_CULL TESTS //
-    //////////////////////////////////////////////
-
-    #[test]
-    fn test_cull_sanitize_fitness_scores() {todo!()}
-
-    #[test]
-    fn test_cull_calculate_average_fitness() {todo!()}
-
-    #[test]
-    fn test_cull_find_champion() {todo!()}
-
-    #[test]
-    fn test_cull_species_truncate() {todo!()}
-
-    #[test]
-    fn test_cull_random_rep() {todo!()}
-
-    #[test]
-    fn test_cull_save_history() {todo!()}
-
-    #[test]
-    fn test_cull_empty_active_species_panics() {todo!()}
-
-    ////////////////////////////////
-    // CHECK_FOR_STAGNATION TESTS //
-    ////////////////////////////////
-
-    #[test]
-    fn test_stagnation_one_species_record_fitness() {todo!()}
-
-    #[test]
-    fn test_stagnation_one_species_last_improvement() {todo!()}
-
-    #[test]
-    fn test_stagnation_many_species_record_fitness() {todo!()}
-
-    #[test]
-    fn test_stagnation_many_species_no_stagnating() {todo!()} // Check stagnation indices
-
-    #[test]
-    fn test_stagnation_many_species_some_stagnating() {todo!()} // Check stagnation indices
-
-    #[test]
-    fn test_stagnation_many_species_all_stagnating() {todo!()} // Two top species survive
-
-    //////////////////////////
-    // ALLOT CHILDREN TESTS //
-    //////////////////////////
-
-    #[test] //test_case
-    // case: All allotments zero
-    fn test_allot_children(/* avg_fit: Vec<f64>, stag: Vec<f64>, expected: Vec<usize> */) {todo!()}
-
-    /////////////////////////////////////
-    // SORT_AND_PLACE_NEW_GENOME TESTS //
-    /////////////////////////////////////
-
-    #[test]
-    fn test_sort_new_genome_clear_match() {todo!()}
-
-    #[test]
-    fn test_sort_new_genome_elder_priority() {todo!()}
-
-    #[test]
-    fn test_sort_new_genome_new_species() {todo!()}
-
-    /////////////////////////
-    // BREED SPECIES TESTS //
-    /////////////////////////
-
-    #[test]
-    fn test_breed_species_no_crossover() {todo!()}
-
-    #[test]
-    fn test_breed_species_interspecies() {todo!()}
-
-    #[test]
-    fn test_breed_species_one_species_hit_interspecies() {todo!()}
-
-    #[test]
-    fn test_breed_species_normal_crossover() {todo!()}
-
-    #[test]
-    fn test_breed_species_normal_crossover_fallback() {todo!()}
-
-
-    /////////////////////
-    // REPRODUCE TESTS //
-    /////////////////////
-
-    #[test]
-    fn test_reproduce_clone_champion() {todo!()}
-
-    ///////////////////////////////
-    // PERFORM EXTINCTIONS TESTS //
-    ///////////////////////////////
-
-    #[test] //test_case
-    fn test_perform_extinctions(/* indices: Vec<Vec<usize>>, expected: Vec<Vec<usize>> */) {todo!()}
-
-    //////////////////////////
-    // NEW_GENERATION TESTS //
-    //////////////////////////
-
-    #[test]
-    fn test_new_generation_new_gen_full() {todo!()}
-
-    #[test]
-    fn test_new_generation_state_reset() {todo!()} //Fitness, counters, etc.
-
-    #[test]
-    fn test_new_generation_extinction_successful() {todo!()}
 
 }
